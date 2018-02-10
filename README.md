@@ -1,1 +1,1 @@
-## BRP Prolog Papers
+## BNR Prolog Papers
