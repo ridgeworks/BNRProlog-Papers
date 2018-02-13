@@ -1,0 +1,361 @@
+
+##	II. Adapting the WAM to BNR Prolog
+
+###	A. Design Issues
+
+The standard documentation on the WAM covers mostly only basic Prolog constructs, so one first needs to extend it to support `clause`, garbage collection, arithmetic, etc. In addition, BNR Prolog has the following unusual features which require major extensions as well:
+-	Cyclic structures
+-	Variable functors
+-	Variadic functors
+-	Tail variables
+-	Variadic predicates
+-	Freeze.
+-	Clause
+-	Garbage Collection
+-	Arithmetic
+
+We will describe the basic issues and their resolutions here; details will be found in the opcode specifications below and in the compiler description. Some familiarity with the standard WAM is assumed.
+
+ <#TableOfContents>
+
+####	1. Cyclic structures
+
+Cyclic structures obviously require some changes in the unification algorithm, which can no longer be a simple recursive procedure. These changes are described in the section on unification below. However, the main point here is that the algorithm for cyclic structure unification requires some significant amount of setup and uses a signifcant number of registers, and this has repercussions.
+
+The basic get/unify instructions of the WAM are partial evaluations of unification, and eliminate the need for "deep" unifications in clauses (the majority of clauses) which only involve pattern matching, i.e., have no repeated variables in the head. Repeated variables show up as `get_val` or `unify_val` opcodes, and normal practice would be to call the deep unification procedure within the opcode whenever the two variables are both structures or lists. However, because of the setup overheads needed for deep unification, BNR Prolog (WAMA) postpones all deep unifications (using an auxiliary stack) until the rest of the clause head has been processed, then (if one gets this far) all deep unifications are done together. In some cases this strategy has the advantage of failing for relatively cheap reasons (e.g., simple mismatch on a late argument) before wasting time doing a deep unification. It does mean, however, that unlike standard WAM, the neck operator ":-" must emit an opcode(`neck`/`neckcons`) to do any deep unifications.
+
+ <#TableOfContents>
+
+####	2. Variable functors
+
+Normally WAM expects all functors to be symbols, and typically the symbol reference and arity are encoded into a single cell, so the WAM opcode `get_struct` encodes the functor/arity. Since any functor can be a variable in BNR Prolog, a separate cell is used for the functor and the `get_struct` opcode only includes the arity. The arity field actually contains N + 1 where N is the usual arity; the extra 1 counting the principal functor. A subsequent opcode (usually `unify_cons` or `unify_var`) then manages the functor.
+
+ <#TableOfContents>
+
+####	3. Variadic functors
+
+In this section we are concerned with variadic structures passed into a predicate; variadic structures created by a predicate are discussed under "tail variables" below, while variadic calls and variadic clause heads are discussed under "variadic predicates" below.
+
+Variadic functors, as data structures on the heap, have a negative arity -n in their header, have n subsequent cells in memory, and end in a tailvar, either bound or not. Any structure passed into a predicate could be variadic, and this creates extra complications for the various `unify-` instructions in read mode. The same considerations also apply for lists. First, when the next cell is examined, it must be checked to see if it is a tail variable, and if so, it must be dereferenced. If it is a self-reference, i.e., an unbound tailvar, then it is bound to the current top of heap and the current opcode is re-executed in write mode. While it is not a self-reference, but still a tail variable, the dereferencing step is repeated. When something other than a tail variable is encountered, this becomes the next term.
+
+Note that external structures with positive arity do not contain tail variables, so could be processed as in normal WAM.
+
+Unlike standard Prolog, in BNR Prolog the arity comparison at the beginning of the unification of structures is not necessarily conclusive, since either or both may be variadic. This requires that there be a definite check at the end to ensure that both structures indeed have the same arity. Structures therefore terminate with the 'punctuation' `end-seq`(=0), (necessarily) the same as lists do. This results in extra opcodes being generated to check/create this punctuation. Related to this is the representation for the empty list: any list term whose address part points at 0.
+
+ <#TableOfContents>
+
+####	4. Tail variables
+
+Tail variables appearing in a clause are semantically different from variables in the same position, so require different opcodes for processing. Thus we need `tunify_var` and `tunify_val` analogous to `unify_var` and `unify_val`. These bind the indicated (tail) variable, not to the term at address a, but to address a itself (regarded as a start of a term sequence). The design problem here involves deciding what actually gets stored in the variable, the tail variable itself (eg. "`Xs..`") or its corresponding term (either "`Xs`" or equivalently "`[Xs..]`"). By choosing the latter, we ensure that *environment variables always contain terms* and never sequences of terms, so `put-` instructions can be issued in the body without needing to distinguish variables which reference sequences. As a side-effect, however, `tunify_var/val` type instructions in the clause body ( which are called `push-` instructions) have different semantics from their var counterparts. Note that the usual pattern of use of tail variables is for them to appear in the head of recursive procedures, while the corresponding term appears in the body (possibly multiple times), and our handling optimizes this case.
+
+The other consequence of tail variables is that the trail now contains two different kinds of entities- addresses of variables and addresses of tail variables, which need to be reset on backtracking. Although it would be possible to retain single cell entries in the trail (as in standard WAM) by storing the old values (i.e., =address for variables, address + list bit for tail variables), a more general solution is to go to 2-cell trail entries consisting of an address and its old value. Although this doubles the trail size, it provides much greater flexibility and is crucial to handling `freeze` and constraint updating.
+
+ <#TableOfContents>
+
+####	5. Variadic calls and predicates
+
+Variadic calls and variadic predicates, although rather rare in practice (compared with variadic structures which are not predicates), are a problem to handle and a source of major incompatibility in principle between BNR Prolog and standard Prolog. They were very natural constructs in the representations used in Version 3, but they block many of the fundamentals of the WAM architecture, particularly the parameter passing mechanism. Some of their uses, notably the variadic `write` predicates and `{ }`, are quite important, so for backwards compatibility these were supported in Version 4 by special handling.
+
+They are handled in the following manner. All clauses of a given predicate --regardless of arity-- are linked in the order given, either textuallly or defined by `asserta/assertz`. (This is quite unlike standard Prolog, where a predicate is defined as the set of clauses of the same head functor and same arity.) Variadic heads are transformed at compile time so that the last argument (the tail variable) is replaced by its corresponding term (so all variables contain terms), but the arity of the clause is left negative and variadic calls similarly have their last argument (tail var) replaced by the corresponding list at run time. At run time, when a variadic clause head is selected as a candidate clause, the arity of the call is compared against the arity of the head. If either arity is negative and there is a possible match, but they are not equal, the call is "adjusted" to make them equal. That is, if there are two few arguments in the call and it is of negative arity, its tail variable will be expanded by the addition of new temporary variables to make up the length needed by the head, and if the call is too long, then the excess will be moved to a sequence on the heap and the corresponding list becomes the last argument.
+
+ <#TableOfContents>
+
+####	6. Freeze
+
+The existence of `freeze` has very little effect on compilation, other than to block certain sophisticated optimizations at compile time. For example, moving a primitive guard filter such as `integer( )` from the body into a head code, while sometimes permissible in normal Prolog if the variable is not referenced between the locations, is blocked in BNR Prolog because something might *not* be an integer during head processing and yet be one by the time one gets into the body, and nothing in the code appears to reference it the meantime.
+
+The run time environment, however, has to deal with three separate problems in order to implement freeze. The first is how to encode the association between a variable (or tail variable) and any frozen goals. The second is how to reactivate the frozen goals upon instantiation of the associated variables. The third is how to interpolate the awakened goals into the execution stream without undermining the assumptions made by the compiler.
+
+BNR Prolog manages the association problem by ensuring that variables with frozen goals are always on the heap, followed immediately by a unique marker, followed by a goal (structure term) or goals (list term). This encoding is not ideal; in particular, there is an annoying problem that one must be careful to check that the variable in question must not be at the top of the heap (so any marker would be bogus). Freezing an environment variable for the first time then requires that it be moved to a new location on the heap.
+
+The possible presence of frozen goals complicates binding variables to variables, since either or both might have associated frozen goals. When one variable has frozen goals and the other does not, we make the one without goals point to the one with goals. This violates the general rule about binding higher address variables to lower ones, but cannot cause loops (exercise for reader) or dangling references (exercise for reader). When both variables have goals, the mechanism is to make a new variable on the heap with a goal which is a list (i.e., a conjunction) of the two goals. This ensures that the original goals and their association with their variables will remain unchanged in case the variable binding is undone by backtracking. It would, however, place a very heavy burden on any global garbage collector, which must now be careful that it does not discard goals associated with the bound *intermediate* variables in a variable chain. Fortunately, the garbage collection technology in BNRP does not have to deal with this problem since it (i.e., the GC) is restricted to the heap tip.
+
+Frozen goals are logically awakened when their associated variables get bound to non-variables, but these occasions are typically deep in the execution of an opcode, and it is impossible to actually call the activated goal at this time. The awakened goals are held in a queue in the task control block until the earliest opportunity for interpolation. Note that changes made to this queue should in principle if necessary be trailed in case of failure; however, this queue is only a short lifetime structure (from start of head processing to start of first call in body), and so long as it empty upon choicepoint creation, the trailing can be skipped and failure resets it to empty.
+
+The only time that it is safe to interpolate into the stream of executing goals in a compiled system is at a call boundary, for the compiler makes no assumption about the state of temporary variables after a call opcode or equivalent, and everything that matters is tucked safely into the environment. Thus on every call, if there are awakened goals in the queue, the current goal (logically residing in argument registers of the WAM) is written to the heap (as a proper structure) and this is appended to the awakened goals queue, and then the queue (as a Prolog list) is called instead (since in BNR Prolog executing a list is is equivalent to executing the elements of the list in sequence). Normally the opportunity occurs at the first call in the body of the clause, whose head unifications triggered the frozen goals. A special case occurs when the first call in the body is not a call but an inline function, such as a simple filter or arithmetic relation or cut, in which case the interpolation is done by a variant neck code.
+
+There is a subtle theoretical point which is important to the implementation of `freeze`. The BNR Prolog User Guide carefully defined `freeze` and the related `{}` constructions, to be true contingent upon instantiation, i.e., in terms of a conditional of the form: "V is instantiated -> P is true". This implies that if an internal variable of a predicate has frozen goals, is not instantiated, and is not exported from the predicate, then the goals need not be true, and more importantly, need not be retained. (This is fortunate, for when the variables they depend on disappear, the garbage collector will scavenge these goals. N.B. this is different from eatlier `freeze` implementations.)
+
+ <#TableOfContents>
+
+####	7. Clause
+
+The traditional approaches to the support of clause in WAM implementations appear to have been either (a) to retain the source code as well as the compiled code in the system, or (b) to provide a complex decompiler utility. In the development of BNRP we noted, however, that most opcodes should perform the same function in clause as they do during normal execution. (This follows since in both cases their function is essentially that of constructing a copy of the clause.) There are a number of exceptions to this: all calls and call equivalents (inlined tests and arithmetic) and cuts must not be executed in the normal fashion.
+
+The BNRP solution is then to ensure that all such opcodes are encoded as extended body codes (using an escape mechanism), and using an alternate case table for executing these opcodes when in "clause" mode. The alternate semantics for these involves creation of the proper term on the heap, and chaining these structures into a list that becomes the body part of `clause`'s output.
+
+These same mechanisms were also used to handle arithmetic expressions whose inputs are not numbers at execution time. The arithmetic evaluation stack is converted into numbers on the heap, and future opcodes in the arithmetic opcode sequence generate proper Prolog structures which are then called as Prolog predicates. This permits extensions to the arithmetic language to be defined in Prolog, and provides a mechanism for invoking the Prolog implementation of the interval constraint system.
+
+ <#TableOfContents>
+
+####	8. Garbage Collection
+
+We have already noted that WAM is architecturally well suited for efficient garbage collection, but the provision of a correct garbage collector for WAM is no simple matter. We have already noted two specific difficulties- one the problem of uninitialized environment variables and the other (in systems with freeze) the preservation of freeze constrants which may be hidden in variable chains. Furthermore, we were not happy with the stop-and-go quality of conventional global garbage collection strategies.
+
+This led us to devise an incremental "generational" style garbage collector that makes maximum use of the built-in WAM architecture to minimize the cost of small partial garbage collections of just the heap tip, i.e., the stuff created on the heap since the last choicpoint creation. This choice of collection region can use the trail contents since the last choicepoint as a complete list of external references, thus making partial collection possible. In addition, since this region has no internal choicepoint boundaries, it permits substantial rearrangement and restructuring of the data-unwinding tail variables, short-circuiting variable chains, (including dropping hidden (finished) freeze constraints, and an extremely efficient one pass compaction algorithm. The specific mechanism which we use also makes it unnecessary to look at environment variables, so we avoid the problems of tripping over uninitialized ones.
+
+ <#TableOfContents>
+
+####	9. Arithmetic
+
+The primitve arithmetic relations in Version 3 were implemented as just a set of primitive calls to Pascal procedures. This was unsatisfactory in that the overheads were rather high for the simple cases (e.g., adding 1 to a number) so common in the usual Prolog applications, yet insufficently high level and versatile for implementing sophisticated algorithms such as relational interval arithmetic constraint system. So in version 4 we opted for a mixed strategy of compiling arithmetic inline to arithmetic opcodes for efficency in simple cases, yet providing an escape mechanism (described briefly under `clause` above) to Prolog for the more sophisticated extensions. I think it is doubtful whether we would have been able obtain the resources needed to develop CLP(BNR) had it been necessary to do it all in C, although now that we know what to do, going back to a primitive based implementation would have some advantages.
+
+ <#TableOfContents>
+
+###	B. Context Stack and State Spaces
+
+Conceptually, BNR Prolog is a number of Prolog "tasks" - essentially independent abstract Prolog engines - running interleaved in a shared environment of contexts, state spaces, and OS objects. Very little will be said here about OS related objects such as files or sockets, or any GUI facilities, for which one should look at the C code.
+
+This section describes the principal objects in the shared environment, the contexts and state spaces, and describes in particular the handling of symbols, whose scoping rules are tied to contexts.
+
+ <#TableOfContents>
+
+####	1. Contexts
+
+Contexts are fundamentally dynamic structures which serve as containers for asserted clauses. (This makes it easy to capture any asserts generated during a program execution and delete them.) Contexts are organized as a stack with the current (open) context on "top".
+
+Local symbols (starting with '`$`') are scoped to the context, so there may be different local symbols with the same spelling in different contexts. This enables one to easily avoid the problem of name collisions between predicates in different contexts, so it is similar in that respect to the modularity notions of other Prologs.
+
+However, it also means that data structures managed by predicates in a context can easily be protected against inadvertent damage by other predicates, just by using local symbols as functors. As an extreme case of this, local symbols can be used as capabilities, as is done with local state spaces (all of which are called "`$local`").
+
+Each context maintains 256 lists of permanent global symbols (indexed by a hash code), one list of permanent local symbols, one of temporary global symbols, and one of temporary local symbols. Temporary symbols disappear (are deallocated) when the operation that created them is backtracked across. Symbols become permanent whenever they are used in a clause or some other longlived structure.
+
+ <#TableOfContents>
+
+####	2. State Spaces
+
+State spaces are repositories for facts which are handled dynamically. In Version 4, the access to state space items is exactly the same as for asserted facts, except for three things. First, remembering a term into a state space is much cheaper than asserting it. (This is because `remember` uses a special optimized version of the compiler, which is much simpler because it only has to deal with facts.) Second, one can `remember` cyclic structures, but are not allowed to assert them. Third, state space access involves some special opcodes that involve transferring (local) symbols by name (rather than as terms) if the lifetime of the state space is longer than that of the context in which the symbol is defined. (For example, all local symbols put into the unnamed global state space are by name, so one can save local symbols, discard the context from which they came, and then recover (different) symbols (with the same names) from the state space.)
+
+ <#TableOfContents>
+
+####	3. Symbols
+
+Whenever symbols are created (by the parser, by state space access, or other primitive) they are looked up in the current context either on the global or local lists (depending on the first character.) When a new symbol is created on the temporary lists, a trail entry is made at the same time, which will mark the symbol as "unused" when it is processed. Items on temporary lists (only) which are marked as unused, are deleted and deallocated when encountered. The use of a temporary symbol in e.g. an assertion moves it from a temporary to a permanent list.
+
+ <#TableOfContents>
+
+###	C. Compilation
+
+Compilation here includes parsing, compiling proper, code generation, and loading. Parsing is done within the various read primitives and the basic compilation task is done by the predicate `compile_clause` in `base5`. There are two versions of code generation, one built into assert which works directly into memory, and one implemented in the context `compile` which emits an ASCII-encoded binary representation.
+
+ <#TableOfContents>
+
+####	1. Parsing
+
+Parsing is as usual divided into tokenization and parsing proper, both implemented in C and very efficient. Tokenization is based on the tokenizer technology described in the Version 3 manuals, but slightly modified. The tokenization rules are given in appendix A. The output of the tokenizer consists of simple terms (symbols, numbers) plus a tag. For symbols, the tag information includes any operator syntax specifications which may apply (as defined by the predicate `op(_,_,_)`; note that op/3 is a predicate in BNR Prolog and not -as usual- a directive).
+
+The token stream goes into the parser, which is based on operator precedence grammars, which is the proper grammar class for Prolog. (Note that Prolog cannot properly be described in standard BNF notation, because the operators are not fixed in advance.) This uses two auxiliary stacks, one for operands and one for operators. Incoming tokens are pushed into the appropriate stack based on some finite state machine control and the tagging associated with the tokens. The operator stack is kept ordered by precedence, with a new operator driving out any operators of tighter precedence. When operators are driven out of the operator stack, they combine with the corresponding arguments from the operand stack and form a structure on the heap and the term representing this structure is pushed to the top of the operand stack.
+
+This basic algorithm is complicated slightly by temporary ambiguity - symbol may be an operand or have more than one operator syntax. The syntactic usage resolves this ambiguity before the term is processed into the heap; the built-in restrictions on multiple syntactic use ensure that this happens unambiguously.
+
+ <#TableOfContents>
+
+####	2. Compile_clause
+
+The basic unit of compilation in BNR Prolog is essentially the clause, rather than the predicate. `Compile_clause` is a predicate in `base5` which compiles a clause into a structure containing symbolic opcodes. For example:
+eg
+	?-compile_clause( f(U,g(2,b,W,h(4,Y)),0,[X,Xs..]):- [p(X,k(W,m(4,U))),g(Xs)], 
+	                  Hash, Code).
+
+returns
+
+eg
+	Hash = f(4, _H)
+
+i.e., predicate = `f`, arity = `4`, Hashcode = `_` (match anything), and
+
+eg
+	Code = [
+		hcomment(f(_U, g(2, b, _W, h(4, _Y)), 0, [_X, _Xs.. ])),
+		get_cons(0, -3),        % 3rd arg t3 = 0
+		alloc,                  % allocate environment
+		get_vart(6, 1),         % _U -> t6
+		[get_struc(5, 2),       % 2nd arg t2 = g(2, b, _w, h(4, _Y))
+			unif_cons(g),       %
+			unif_cons(2),
+			unif_cons(b),
+			unif_vart(8),       % _W -> t8
+			unif_vart(2),       % reuse t2 to hold h(4, _Y)
+			end_seq],
+		[get struc(3, 2),       % arg 2=h(4, _Y)
+			unif cons(h) ,
+			unif_cons(4),
+			unif_void,          % _Y was not needed anywhere
+			end_seq],
+		[get list(4),
+			unif_vart(7),       % _X -> t7
+			tunif_varp (1)],    % _Xs -> p1
+		neck,
+		comment(p(_X, k(_W, m(4, _U)))),
+		[
+			[put_struc(3, 5),   % construct t5 = m(4,6)
+				push_cons(m) ,
+				push_cons(4),
+				push_unsaft(6),
+				push end],
+			[put_struc(3, 2),   % construct t2 = k(8,5,m(4,6))
+				push cons (k) ,
+				push=valt(8),
+				push_valt(5),
+				push_end],
+			put_valt(7, 1),     % _X -> t1
+			[],
+			call((p I 2), 1)],  % call p with 2 args; length of env=1
+		comment(g([_Xs..])),
+			[put_valp(l, 1),    % _Xs -> t1
+				dealloc,
+				exec((g I 1))]]
+
+The `hcomment` and `comment` terms provide the bit of source (from the original clause with its original variables) which generates each successive bit of of the output.
+
+The first thing that `compile_clause` does with its input is to put it into standard form and make a copy (using `decompose`, which also checks that it is not a cyclic term). The original clause (including variable names if possible) is used to emit `comment` pseudo-opcodes interspersed with the real opcodes.
+
+Since WAM compilation is mainly concerned with tracking various attributes of variables, the next step is to build a symbol table for variables. Normally this would be done using a tree structure, but instead the variables are bound directly to a structure containing various attributes, and these structures are also kept in a list. This is done in reverse order (right to left), so that the last used variables become the first in the list, so that when permanent variables are numbered, the last used ones get small numbers in order to improve environment trimming. Note that the functor for this structure is a *local* symbols `$var` and `$tvar` (in Base), so the compiler has no problem compiling itself so long as the two versions of the compiler (the compiler and the compilee) are in different contexts- note that for this reason this strategy does not work in most Prolog systems.
+
+The fields of the `$var/$tvar` structure and their meanings - which are central to the compilation process, are:
+
+eg
+	$var(
+		Register,        % register assignment
+		[First, Last],   % index of first & last occurrence
+		Perm,            % p=permanent or t=temporary
+		Void,            % void/nonvoid
+		Initialized,     % = 1 after first occurrence
+		Safety           % _(not safe), safe, very_safe
+		).
+
+The `Register` values (1-255) are assigned during the compilation, with the value of `Perm` indicating whether they are permanent (i.e., in an environment) or temporary (in one of the 255 global temporary registers). The calls (first level subterms,including the head) of the clause are *indexed* from left to right with the head and first call on the right getting the same index, and the index of the first and last ocurrence of a variable are recorded. Variables where these values are the same (i.e., appear in a single body call or in the head and just the first body call), as well as values as those introduced decomposing terms, are temporary, while all others are permanent. Variables which have no second occurrence are marked as void ("anonymous variables"). The `Initialized` field is a variable until the first occurrence is processed for code emission, then becomes a 1. The `Safety` field is used to track variables which might be uninstantiated environment variables; a variable here indicates a potentially unsafe variable, while 'safe' means one which is safe for calling (it was not initialized in the current environment) but not known to be on the heap, and 'very_safe' means *known* to be on the heap.
+
+The general pattern of compilation is then (after the variable symbol table is built) to compile first the head, and then the body one call at a time. Compiling the head is a matter of unwinding (or flattening) the structures in the head in a top-down fashion, and converting each piece into appropriate `get-/unify-` opcodes, as illustrated above. The top level arguments are rearranged in order to check any simple constants first, as was done with the "0" in this example. Compiling the body goals is similar, but flattening is done in a bottom-up fashion (little pieces built before those that contain them) and the opcodes emitted are the constructor opcodes `put-/push-`. The last call is usually slightly different because of Last Call Optimization: after the arguments are built, the environment is popped with a `dealloc`, and the call is replaced by `exec` (essentially a jump).
+
+Temporary variables are assigned indexes after each call; each call can use the full set of 1-255 temporaries available. However, the head and the first call of the body are treated as a single call for this purpose, and there are possible conflicts between the use of the same registers to hold the predicate arguments and the arguments to the first call (which may be set directly from head instructions) The compiler uses `freeze` and unequal (`=/=`) constraints to ensure that only a correct register allocation is generated, but makes no attempt to discover an optimal assignment. (In the example above, the variable X could have been moved directly to t1, for example, to save one opcode.)
+
+Permanent variables are simply numbered once at the end of the compilation process, in the reverse order of their occurrence. *Note that register allocation algorithms can not be used on environment variables* since backtracking requires that an environment variable register never be used for anything else so long as the environment exists, while the existence is (except in certain circumstances) only determined at run-time.
+
+Primitive filters (`var`, `symbol`, etc. ) and primitive arithmetic functions are compiled inline to opcodes in the extended opcode set. In certain cases filters are known trivially at compile time, e.g., "integer(2)" is of course always true and "integer(h)" is always false. These are currently assumed to be the result of typographic errors and so are treated as errors by `compile_clause`. One exception is "var(_)", testing an anonymous or first-use variable, which is logically always true, is therefore omitted and just a warning given.
+
+Arithmetic opcodes are based on a stack model of arithmetic function evaluation, and are encoded into the opcode stream as escape sequences, as can be seen from the example in the next section. Preprocessing of arithmetic expressions may break them up into smaller expressions for one of two reasons. First, any operator/functor appearing in an arithmetic expression for which no opcode exists is assumed to be defined in Prolog, so that portion of the expression is isolated and compiled as a Prolog call to the appropriate predicate (`is`, `==`, etc.). Secondly, the arithmetic evaluation stack is limited to 8 items (because of implementation restrictions in the Assembler version on 68K machines), so any evaluation which requires a deeper stack is decomposed into smaller pieces before compilation. (Implementation note: in `compile_clause` these inline capabilities (primitive filters and arithmetic) are tried first (non-deterministically), and if they fail for any reason, compilation will continue as if these were ordinary Prolog calls.)
+
+ <#TableOfContents>
+
+####	3. Code Generation
+
+The binary encoding of the symbolic opcodes emitted by `compile_clause` could be done in many different ways, depending on the implementation approach. Currently the BNR Prolog run time systems are interpreters, and use a byte coded representation convenient on byte-addressable machines. Since the number of fundamentally different instructions needed is quite limited, and 512 codes are available (256 in head and another 256 in body), the general practice is to allocate them in blocks of 8 and encode the first 7 registers directly in the opcode, and to use the escape value (0) and an added byte only when needed. This helps reduce code sizes (especially in small procedures so typical in Prolog) and is also convenient for implementations in which the first few temporary variables are located in machine registers, as is currently the case in the 68K Assembler version.
+
+The coding is specified in table form in Appendix B. A symbolic representation of the coding is also contained in the code generator part of the module "compile". This module, which uses `compile_clause`, transforms the symbolic opcode sequence into an ASCII representation of the binary encoding, and also constructs and concatenates to this a symbol table (for constant symbols, longints, and floats) which can be loaded quickly by the built-in loader.
+
+Consider a file containing the previous example clause and an arithmetic example:
+
+eg
+	f(U, g(2, b, W, h(4, Y)), 0, [X, Xs.. ]) :-
+	        p(X, k(W, m(4, U))),
+	        g ([Xs..]).
+	
+	f(X,Y,Z,W) :- W is W*(X*Y+Y*Z + g(X,Y,Z)).
+
+The following is a "listing" version of the compiler output; usually one gets only the stuff in the left column plus the symbol table at the end. Note that the first clause has 58 syntactic tokens, and transforms to ``2*68 = 136`` bytes of code. in the ASCII file representation, and this becomes in memory( where constants get expanded to 4 bytes but 2 ASCII bytes map into 1 binary byte) ``68 + 11 constants * 2 = 90`` bytes (not counting string storage, clause linkages, etc.). As a rough guide, source size, code filesize, and in core codesize are comparable.
+
+eg
+	
+	;           Compiler Version          version 25
+	;           Code Generator Version    Oct/30/91
+	
+	
+	proc FFFF000004 ;f(_U,g(2,b,_W,h(4,_Y)),0,[_X,_H1021 .. ]) :-
+	OBFFFE        ;get cons   0,    3
+	06            ;alloc
+	96            ;get_vart   6,    1
+	1205          ;get struc  5,    2
+	04FFFD        ;unif cons  g
+	04FFFC        ;unif-cons  2
+	04FFFB        ;unif cons  b
+	4008          ;unif-vart  8
+	42            ;unif-vart  2
+	03            ;end_seq
+	1203          ;get struc  3,    2
+	04FFFA        ;unif cons  h
+	04FFF9        ;unif-cons  4
+	01            ;unif-void
+	03            ;end_ seq
+	24            ;get list   4
+	47            ;unif vart  7
+	69            ;tunif_varp 1
+	00            ;neck
+	        ; p(_X,k(_W,m(4,_U)))
+	1503          ;put struc  3,    5
+	04FFF8        ;push_cons  m
+	04FFF9        ;push_cons  4
+	078E          ;push_unsaft      6
+	03            ;push_end
+	1203          ;put_ struc 3,    2
+	04FFF7        ;push_cons  k
+	5008          ;push_valt  8
+	55            ;push_valt  5
+	03            ;push_end
+	97            ;put valt   7,    1
+	070A02FFF601      ;call   p / 2,     1
+	        ; g([_H1021..])
+	99            ;put valp   1,    1
+	06            ;dealloc
+	070C01FFFD    ;exec       g / 1
+	
+	
+	proc FFFF000004 ;f(_X,_Y,_Z,_W) :-
+	06            ;alloc
+	9B            ;get_varp   3,    1
+	AC            ;get_varp   4,    2
+	BD            ;get varp   5,    3
+	C9            ;get=varp   1,    4
+	050505        ;neckcon    5
+	        ;_H1169 is g(_X,_Y,_Z)
+	1204          ;put_struc  4,    2
+	04FFFD        ;push_cons  g
+	1B            ;push_unsafp      3
+	1C            ;push_unsafp      4
+	1D            ;push_unsafp      5
+	03            ;push_end
+	3902          ;put varp   2,    1
+	070A02FFF505      ;call   is / 2,    5
+	        ; _W is _W * ((_X * _Y + _Y * _Z) + _H1169)
+	07            ;escape
+	69            ;eval_valp  1
+	6B            ;eval_valp  3
+	6C            ;eval_valp  4
+	9B            ;*
+	6C            ;eval_valp  4
+	6D            ;eval_valp  5
+	9B            ;*
+	99            ;+
+	6A            ;eval_valp  2
+	99            ;+
+	9B            ;*
+	5901          ;pop_valp   1,    1
+	06            ;dealloc
+	00            ;proceed
+	
+	sym FFF3:op(500,yfx)="+"
+	sym FFF4:op(400,yfx)="*"
+	sym FFF5:op(700,xfx)=is
+	sym FFF6:sym=p
+	sym FFF7:sym=k
+	sym FFF8:sym=m
+	sym FFF9:int=4
+	sym FFFA:sym=h
+	sym FFFB:sym=b
+	sym FFFC:int=2
+	sym FFFD:sym=g
+	sym FFFE:int=O
+	sym FFFF:sym=f
+
+
+Note that the symbol table records any relevant operator defintions in use at compile time; the loader issues a warning if these differ from those present at load time.
+
+New implementations, whether based on native code or just different packing more suitable for some machine architecture, can thus be implemented either directly from the abstract symbolic output of `compile_clause`, or as part of the load process, taking the current binary representation as input. Note that the latter choice would have the advantage that compiled files remain portable between implementations.
+
+ <#TableOfContents>
+
+####	4. Loader
+
+The loader(s) translate code (either symbolic as produced by `compile_clause` or in ASCII form) into binary bytes in memory, replacing symbols by their corresponding terms. On machines whose architecture have alignment restrictions, so that multibyte values such as symbol terms, long integers, and floats must start on certain byte boundaries, the loaders must arrange this during translation.
+
+ <#TableOfContents>

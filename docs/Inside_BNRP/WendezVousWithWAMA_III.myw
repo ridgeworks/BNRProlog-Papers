@@ -1,0 +1,2265 @@
+
+##	III. Runtime Core
+
+###	A. Prolog Tasks
+
+Each Prolog task is conceptually a separate *suspendable* Prolog engine with its own heap and control stacks. Communication between tasks is always done by copying mechanisms, so storage management in one task is independent of all other tasks. In particular, one task can recurse while a task it communicates with can be backtracking, and this permits the conversion of (backtracking) generators into (recursive) constructors and vice-versa.
+
+The state of a runmng task is carried in a number of registers which typically point into the large data areas, the heap and control stack. A suspended task stores these registers in its task control block or tcb. The pointer to the tcb is the sole argument to primitive calls, and register contents are written back into the tcb before each primitive call.
+
+The layout of the task control block is:
+
+eg
+	struct TCB {
+		TCB      *prevTask;      /* tasking fields*/
+		long     validation;
+		long     taskName;
+		long     smsgVal;
+		long     rmsgVal;
+		TCB      *invoker;
+		TCB      *invokee;
+		                         /* memory management fields*/
+		long     space;            /* global allocation */
+		long     freePtr;          /* pointer to free space in global allocation */
+		long     ASTbase;          /* start of AST */
+		long     heapbase;         /* start of heap */
+		#define  heapend   te
+		long     trailbase;        /* start of trail (backwards) */
+		#define  trailend  hp
+		long     envbase;          /* start of environment records */
+		#define  envend    lcp
+		long     cpbase;           /* start of choicepoints (backwards) */
+		#define  cpend     ce
+		long     spbase;           /* start of push down stack */
+		long     spend;            /* end of push down stack */
+		long     emptyList;        /* standard empty list */
+		                         /* state variables */
+		long     ppsw;             /* misc control information */
+		                           /* defined as flags (8) I mode (8) I result (16) */
+		long     te;               /* top of trail */
+		long     lcp;              /* last cpoicepoint */
+		long     cutb;             /* cut point register */
+		long     svsp;             /* original stack pointer */
+		long     hp;               /* top of heap */
+		long     ppc;              /* prolog program counter */
+		long     ce;               /* current environment */
+		long     cp;               /* continuation pointer */
+		long     stp;              /* stack pointer in case we interrupt head codes */
+		long     glbctx;           /* ptr to global environment */
+		long     constraintHead;   /* queue for freeze constraints*/
+		long     constraintTail;
+		long     procname;         /* name of current call */
+		#define  nargs     args[O]
+		long     args[MAXREGS];    /* arguments to a call */
+	} ;
+
+The first six fields are concerned with task management, the next three with symbol table management, `heapbase` through `spend` are constants defining the various stack areas (see below), while the remainder are the saved versions of state variables.
+
+The other main data structures are environments and choicepoints:
+
+eg
+	environment = {
+		pname     :    symbol,
+		cutb      :    ^choicepoint,
+		previous  :    ^environment,
+	ce => ppc     :    ^bytecodes,
+		<variable sized array of upto 255 permanent variables>
+	}
+	
+	choicepoint = {
+		nextcls   :    clause,
+		hashkey   :    hashval,
+		critical  :    address,        % end of env stack
+		hp        :    saved heapptr,
+		previous  :    ^choicepoint,
+		te        :    ^trailitem,     % saved trailend
+		ce        :    ^environment,   % saved ce
+		cp        :    ^bytecodes,     % saved cp
+		arity     :    longint,
+		args      :    variable length (arity) array of terms
+	}.
+
+ <#TableOfContents>
+
+###	B. BNR Prolog Memory Organization
+
+Each Prolog task has two exclusive areas of memory, with fixed boundaries, which it uses as pairs of stacks. The first (lowest in address space) is the heap area comprised of the heap (which grows in the positive direction) and the trail (growing negatively). The second is the control area consisting of the environment stack (growing positively) and the choicepoint stack (growing negatively).
+
+eg
+	(low addresses)
+		|     |  <- heap_base
+		|    |      (heap)
+		|    |   <- hp
+		|    |
+		|    |   <- te
+		|    |      (trail )
+		|     |  <- heap_end
+		.
+		.
+		|     |  <- env base
+		|    |      (environments)
+		|    |   <- ce
+		|    |
+		|    |   <- lcp
+		|    |      (choicepoints)
+		|     |  <- cp_end
+	(high addresses)
+
+As usual, the heap must be lower in address than the environments for the variable-to-variable binding direction to work properly.
+
+At the implementation level, we use the three high order bits for tags, so heap addresses can only be 29 bits effectively, i.e., the heap must be in the first l/2 GB of address space. The stack area can be anywhere below the 2GB boundary, since it only contains variables. (On some architectures it may be advantageous to move the <1st> and <atm> bit to the low order end to improve reachability.)
+
+ <#TableOfContents>
+
+####	Data structures
+
+The BNR Prolog data structures are quite different from those of normal (i.e., Quintus) Prolog because it supports cyclic structures, variable functors, variadic functors, and 'true' lists (no weird terminations). Conceptually, they are defined by mutual recursion between two key metaconcepts, "<term>" and "<sequence> (of terms)" as follows (for ground instances):
+
+>
+	<symbol> **isa** <term>
+	<integer> **isa** <term>
+	<float> **isa** <term>
+	<void> **isa** <sequence>
+	<term>,<sequence> **isa** <sequence>
+	[ <sequence> ] **isa** <term>
+	<symbol>( <sequence>) **isa** <term>
+
+Since a variable logically represents 'any term', and a tail variable logically represents 'any sequence' , we add the rules:
+
+>
+	<variable> **isa** <term>
+	<tailvariable> **isa** <sequence>
+
+and finally (to allow for variable functors):
+
+>
+	<variable>(<sequence>) **isa** <term>.
+
+Note that the recursion here need not be well-founded: the instances can be (or appear to be) infinite structures. (In principle, the ground instance term space of BNR Prolog should be construed as the set of all inifinite trees, including the finite ones and "rational" ones as special cases.)
+
+ <#TableOfContents>
+
+####	Implementation issues
+
+As usual, all data structures (apart from simple constants) are kept on the heap, which is considered as an array of (32-bit) cells. Terms are always encoded into 32 bits, so a term will fit into a cell. Since both a tag and an address must fit into a 32-bit cell, the size of the tag places restrictions on which parts of the total address space is useable. To minimize this effect, the tag field is variable size - 2 bits (to maximize address ability) or 4 bits ( when addressability is not an issue). The tag is located currently in the high end bits of the cell.
+
+The BNR Prolog term types and their tags are:
+
+tsvtable
+	Class		Tag		Type
+	Variables	00		variable
+		'''		01		tail variable (continuation)
+	Atoms		1110	symbol
+		'''		1111	integer (short)
+		'''		100		longint
+		'''		100		float
+	Compound	110		list
+		'''		100		structure
+
+Notes:
+1..
+	*	Logically, there is no distinction between integers (16 bit signed) and longints. However, one needs 32-bit integers for various purposes, but their overhead is quite high, while most integers are in fact short. Hence the implementation utilizes a cheap encoding for those that fit into 16 bits and a more expensive one for everythings else. A short integer is never stored in the longint coding.
+	*	The coding for longints and floats is the same as for structures, but they start with a different header cell. It was judged that it is rare that an integer or float would be used in a position expecting a structure, so the extra processing to get the headers during unification would be very rare.
+	*	Longint data structures have a header and cell count (=1) in the first cell, so could easily be extended to "bignums". Floats also have a distinct header and a cell count (2 for double precision).
+	*	A bound tail variable and a list differ only in the sign bit- this makes the transition between a sequence and its corresponding term cheap.
+	*	No bits have been reserved for garbage collection since the BNRP gc strategy does not need them. Also, no bits are used for "cdrcoding" since that is the default.
+
+ <#TableOfContents>
+
+###	C. Execution Phases
+
+The execution of Prolog can be described as a sequence of phases. The call phase involves locating the code associated with a predicate (whether in Prolog or C) and doing the appropriate housekeeping chores, such as saving registers (for a C call) and possibly creating a choicepoint for a Prolog call. For a Prolog call, the next phase is the head phase in which the opcodes in the head of the clause are interpreted. Once into interpretation, any logical failure such as a unification mismatch will send control back to the call phase. Once the head of the clause is passed, the computation is in neck phase (corresponding to ':-'), which processes any deep unifications left over from the head. When the neck phase is complete, the computation enters body phase in which the code in the body of the clause is interpreted. In body phase new calls are generally encountered to complete the cycle.
+
+The compilation process determines the content of the head and body phases, but the call and neck phases are determined by fixed code and run time circumstances, with almost no input from compilation. BNR Prolog is in this respect unlike the usual Prolog system, in which compilation supplies *indexing instructions* which manage the call phase, and in which neck phase does not usually exist.
+
+The remainder of this section will progress through the phases in the order given above.
+
+ <#TableOfContents>
+
+####	Pseudocode Conventions and Notation
+
+The remainder of this section will employ a pseudocode tailored for the expression of Prolog opcodes, with the intent of making the description conveniently concise and using a Prolog compatible syntax. This description is based on the WAMA implementation, but no attempt has been made in general to capture the detailed structure (or lack of it) in the Assembler coding. The details of opcode and parameter fetching have been abstracted away.
+
+WAM opcodes will be specified as sequences of lower level operations, such as:
+` V <-X     ` variable V is assigned value X
+` S <= X    ` value X becomes next term in contiguous sequence S
+` S => X    ` the next term in sequence S becomes X
+
+These all generate a result (X), so may be cascaded.
+` X@=Y      `exact 32-bit comparison of terms (i.e., identity relation)
+ `               `(if not equal, the action is Fail unless otherwise specified)
+` X@<Y      `unsigned (address) comparison
+` X@/=Y     `not X@=Y
+
+Terms are regarded as composed of a value field and a tag field, denoted by `x.tag` and `x.value`, respectively. When being constructed, this will usually be expressed in terms of the specific bits which need to be set, e.g., to make a list from the heap pointercan be expressed as `listterm <- sgn|list|hp`. The bar can be thought of as a bitwise or operation. The opposite problem, that of turning off bits in a tag, is expressed using `&~` ; for example, the inverse to the last example could be expresed as `hp <- (listterm &~ list) &~ sgn`. Curly brackets `{}` delimit blocks as in C.
+
+We will regard the, temporary var "registers" in the task control block as an array of terms, expressed as `temp[N]` where `N` is the var index. Similarly, the current environment pointer ce is regarded as the address of an array of terms (permanent variables), written `ce[P]`. By extension we also use `ce[-1]`, `ce[-2]` etc. to get at the environment headers. Sometimes the heap will also be regarded as an array of terms, typically indexed positively and/or negatively from some pointer into it, and use `[p]` for pointer dereferencing.
+
+The control constructs used are:
+` {P -> A | B }                            `if P then A else B
+` p -> A                                   `if P then A else true
+` goto Label.`
+` case V of { V1 -> S1 | V2 -> S2 | ... }  `case statement
+
+Regard "`->`" in conditional as tighter than "`,`", "`,`"as tighter binding than "`->`" (if ..then ..else) which is tighter than "`(|)`". We use the convention that any cases not explicitly mentioned in case statements defaults to Fail.
+
+We assume that the Abstract Machine has the following "registers".
+
+` ppc    `prolog program counter
+` tcb    `pointer to task control block
+` temp   `pointer to array of temporary variables/arguments
+` ce     `current environment
+` hp     `heap pointer
+` stp    `structure pointer, for reading structures and lists in head
+` bh     `critical heap address
+` be     `critical environment address
+` pdl    `push down list for unification
+
+plus the following kept in the tcb:
+
+` te     `trail end
+` lcp    `pointer to last choice point
+` cp     ``ppc` at last call (return address).
+
+ <#TableOfContents>
+
+###	D. Utilities
+
+eg
+	deref( T:term)-> Tag :- % function returns Tag
+		while T>O and T\@=[T] do T<-[T],
+		Tag<- T.tag.
+	
+	derefseq(A,T) ->:- % function, A is heap address,returns tag value
+		loop:T<-[A] ,
+			{ T@=O -> endseq
+			| T<O or -T[list] -> term
+			| A@=(B<- T &~ list) -> tailvar
+			| A<-B, goto loop
+			}.
+	
+	entrail( Addr,Value) :- T<-te[lcp], % trail grows towards low mem
+		--T, [T]<- Value,
+		--T, [T]<-Addr,
+		te[lcp]<-T.
+	
+	wakeup_constraint(Term) :-
+		Queue<- (list|hp), % i.e., a tailvar
+		hp<=Term,
+		{ qhead(tcb)@=O -> qhead[tcb]<-Queue
+		| [qtail[tcb]]<-Queue},
+		qtail[tcb]<-hp, % note that we do not trail since wakepu list is
+		% only a temporary structure (should be empty at cp creation)
+		hp<=O,
+		BNRP_flags.C<-1.
+	
+	bindvar( Addr, Term):-   %term not a variable
+		Addr[1]@= -1 ->wakeup constraint(Addr[2]),
+		bind( Addr, Term).
+	
+	bind( Addr, Term):-
+		(Addr @< bh)         % on heap and earlier than lcp
+		or ((hp@<Addr) and (Addr @< be)      % env, before lcp
+		      -> entrail(Addr,Addr),
+		[Addr]<- Term.       %bind the variable
+	
+	bindvv( Addrl, Addr2) :- % bind var to var
+		{ Addrl @= Addr2-> true
+		| Addrl @< Addr2 -> $bndvv( Addr1,Addr2)
+		| $bndvv(Addr2,Addrl)
+		}.
+	
+	$bndvv(Addr1,Addr2) :-
+		{ Addr1[1]@/= -1 -> bind(Addr1,Addr2)
+		| Addr2[1]@/= -1 -> bind(Addr2,Addr1)
+		| F <- (sgn|hp),     % both constrained
+			hp<= [(struct_hdr|5), 'BNRP_combineVar',
+				Addrl, Addr1[2],
+				Addr2, Addr2[2], 0 ],
+			wakeup_constraint(F) % Prolog call.
+		}.
+
+	bindtvar( Addr, Seq):-  % Addr and Seq are addresses on heap
+		Addr[1]@= -1 -> wakeup_constraint(Addr[2]),
+		Addr @< bh -> entrail(Addr[O],Addr),
+		Addr[O]<- (list|Seq).  % bind the variable
+	
+	arity_compatible(M,N) :- {M>=O and N>=O -> M@=N | (M+N) >= 0}.
+	
+	nilcheck( A:address) :-
+		loop:T<-[A],
+			{ T@=O -> true
+			| T<O or -T[list] -> goto fail
+			| A@= (B<- T &~ list) -> bindtvar(A,O)
+			| A<-T &~ list, goto loop
+			}.
+	
+	unify_term(Term1,Term2) :-
+		case Term1 of
+			{ var-> case deref( Term2) of
+				{ var-> bindvv( Term1.value,Term2.value)
+					| bind( Term1.value, Term2)
+				}
+			| integer ->case deref( Term2) of
+				{ var-> bind( Term2.value,Terml)
+				|integer-> Term1@=Term2
+				}
+			| symbol-> case deref( Term2) of
+				{ var-> bind( Term2.value,terml)
+				|symbol-> Terml@=Term2
+				}
+			| longint-> case deref( Term2) of
+				{ var-> bind( Term2.value,Term1)
+				| longint-> Term1.value[O,1]@=Term2.value[O,1]
+				}
+			| float:case deref( Term2) of
+				{ var-> bind( Term2.value,Term1)
+				| float-> Term1.value[0,1,2]@=Term2.value[0,1,2]
+				}
+			| structure:case deref( Term2) of
+				{ var-> bind( Term2.value,Term1)
+				| structure->
+					Term1.value=>(struc_hdr|M),
+					Term2.value=>(struc_hdr|N),
+					arity_compatible(M,N),
+					pushpdl(Term1.value,Term2.value)
+				}
+			| list-> case deref( Term2) of
+				{ var-> bind( Term2.value,Term1)
+				| list-> pushpdl(Term1.value,Term2.value)
+				}
+		}
+
+ <#TableOfContents>
+
+###	E. Call Phase: Call and Fail
+
+Note: Calls and Execs leave the ppc pointing at the byte in the code stream containig the current environment length. This is used to determine the end of the environment stack in newchoicepoint and alloc.
+
+eg
+	call(Pred/N) :- cp[tcb]<- ppc, ecall(Pred,N).
+	
+	exec(Pred/N) :- ecall(Pred,N).
+	
+	ecall(P, N) :- {BNRPflags[tcb]@=0 -> ecall2(P,N) | interrupt(P)}.
+	
+	ecall2 (P; N) :-
+		procname[tcb]<- P,
+		A<- P && symmask,  % mask out tag bits to get AST ptr
+		A<-[A],            %first clause /primiitve
+		{ A>O ->callprolog(A,N)
+		| A<O ->callprimitive(A,N)
+		| BNRPflags[tcb]@/=0, procname[tcb]@/='tracer',goto tracer
+		}.
+
+	callprolog(A,N) :-
+		cb[tcb)<-lcp, %i.e., last choice point prior to this call
+		nargs[tcb]<-N,
+		H<-hashkey(N),
+		{H@=O -> ppc<-nextclause(N,A,Next)
+			| ppc<-findclause(N,A,H,Next)},  %keyed access
+		Next@/=0 -> newchoicepoint(N,H,Next),
+		goto shead.
+
+	shead:-
+		N<O -> adjust_arity,
+		(hp + 1024) > te[tcb]) ->error( 'heap overflow'),
+		goto Head.
+
+	hashkey(N)->{N@=O ->0
+		| case deref( temp[1]) of.
+			{ symbol-> symbolhash( stemp[1].value) % state space
+			| integer-> temp[1]
+			| longint-> temp[1] .value[1]+1
+			| float-> temp[1].value[1]+2
+			| list-> (temp[1]=[] ->[] | (sgn|lst))
+			| structure-> min(O,temp[1].value[1]) % princ.func
+			| 0
+			}}.
+
+	nextclause( N,A,B) -> P:-  % fails if no clause found
+		loop:M<- arity[A],
+		{ arity_compatible(M,N) -> B<-nextclause[A], P<- address(code[A])
+		| 0@/=A<-nextcl[A], goto loop,
+		}.
+
+	findclause( N,A,Key,B) -> P:-% fails if no clause found
+		loop: K<- key[A],
+		{ [K@=O or K@=Key, arity compatible(arity[A],N)] -> B<-nextkeyed[A]
+		| 0@/=A<- nextkeyed[A], goto loop,
+		}.
+
+	dummy_choicepoint:- {CP:^choicepoint}
+		CP<- lcp[tcb] - 10*cellsize,
+		previous[CP]<- lcp[tcb],
+		arity[CP]<- -1,
+		nextcl[CP]<- 0,
+		key[CP]<- -1,
+		procname[CP]<- procname[tcb],
+		cp[CP]<- cp[tcb],
+		ce[CP]<- ce,
+		te[CP]<- te[tcb],
+		hp[CP]<- hp,
+		be[CP]<- be,
+		bh<- hp,  % new critical heap value
+		lcp[tcb]<-CP,
+		cb[tcb]<- CP.  % make this the cutback point for this predicate
+
+	newchoicepoint(N,Key,Next):- { J:integer, CP:^choicepoint},
+		% choicepoint stack grows down towards low memory
+		CP<- lcp[tcb] - (10 + N)*cellsize,
+		previous[CP]<- lcp[tcb],
+		N/=0->for J=1, ... ,abs(N) do { args[CP][J] <= temp[J]},
+		be@< ce -> be<- ce + 4*(1+byte[ cp[tcb]]),
+		     %new end of env stack and critical env value
+		arity[CP]<- N,
+		nextcl[CP]<- Next,
+		key[CP]<- Key,
+		procname[CP]<- procname[tcb],
+		cp[CP]<- cp[tcb],
+		ce[CP]<- ce,
+		te[CP]<- te[tcb],
+		hp[CP]<- hp,
+		be[CP]<- be,
+		bh<- hp,  % new critical heap value
+		lcp[tcb]<-CP.
+
+	fail :- {N:integer,A:clause entry ptr, Next:address of clause}
+		pdl<- stbase,
+		qhead[tcb]<-qtail[tcb]<-0,
+		lcp@=O -> goto taskterminate,
+		{-1 @=N<-arity[lcp]-> lcp<- previous[lcp],goto fail},  %was dummy cp
+		     % now see if there is another clause that matches
+		A<- nextcl[lcp], Key<- key[lcp],
+		{ Key @=0 -> ppc<-nextclause(N,A,Next)
+		| ppc<-findclause(N,A,Key,Next)
+		| lcp<- previous[lcp], goto fail
+		}
+		hp<- hp [lcp],
+		cb[tcb]<- previous[lcp],  %for cut
+		ce<- ce[lcp],
+		cp[tcb]<- cp[lcp],
+		procname[tcb]<- procname[lcp],  %for debugging
+		nargs[tcb] <- N,
+		process_trail( te[lcp]),
+		N>O ->for J=1, .. ,N do temp[J] <- lcp [savearg + J],
+		{ Next@\=0 -> nextcl[lcp]<-Next  % update clause ptr
+		| lcp<-previous[lcp]  % or finish this choicepoint
+		},
+		be<- be[lcp],  % these may now refer to the previous choicepoint
+		bh<- hp[lcp],
+		goto shead.
+
+	process_trail( Oldte) :- {T:^^term, A:^term},
+		T<- te[tcb],
+		while T@<Oldte do {A<-[T],T++,[A]<-[T],T++},% reset var/tvar
+		te[tcb]<-Oldte.
+
+	interrupt(P) :-
+		{ BNRPflags[tcb] & c_bit -> handle_constraints(P)
+		| BNRPflags[tcb] & a_bit -> handle_attention(P)
+		| BNRPflags[tcb] & t_bit -> handle_tick(P)
+		| {spy_point_exists(P)-> tracer(P)
+		| BNRPflags[tcb]<-0
+		}.
+
+	suspend_call(P) :- { T:term, J:integer} % P is principal functor
+		N<- nargs [tcb],
+		T<- (sgn|hp),
+		hp<= [ (struc_hdr|N),P],
+		for J=1, .. ,N do push_unsaft(J),
+		hp<=O,
+		wakeup_constraint(T).
+
+	handle_constraints(P) :- suspend_call(P),call_constraints.
+
+	call constraints:-
+		BNRPflags[tcb][c_bit]<-0,
+		T<- (sgn|qhead[tcb]),  %list
+		qhead[tcb]<-qtail[tcb]<-0,
+		temp[1]<-T,
+		ecall2(indirectAtom,1)).
+
+	handle_attention(P) :- {T:term},
+		suspend_call(P),
+		BNRPflags[tcb][a_bit]<-0,
+		T<- (sgn|list|hp),
+		hp<= [ attentionAtom,temp[1], 0],
+		temp[1]<-T,
+		ecall2(indirectAtom,l).
+
+	handle tick(P) :- {T:term},
+		suspend call(P),
+		BNRPflags[tcb] [t_bit)<-0,
+		T<- (sgn|list|hp),
+		hp<= [ tickAtom,temp[1], 0],
+		temp[1]<-T,
+		ecall2(indirectAtom,1).
+
+	tracer(P) :- suspend_call(P), ecall2('tracer',1).
+
+	callprimitive(P,N) :-
+		N<O -> unwindcall,  % variadic C call
+		heap[tcb]<-hp,
+		svce[tcb]<-ce       % save prolog registers into tcb,
+		++ BNRPprimitivecalls,
+		restore C registers,
+		Retcode<-callc( P),
+		Retcode@=O -> goto Fail,
+		hp<-heap[tcb],      % restore prolog registers from tcb
+		ce<-svce[tcb] ,
+		ppc<- cp[tcb],
+		lcp<- lcp[tcb],
+		bh<- hp[lcp],
+		be<- be[lcp],
+		qhead[tcb]@/=0 -> goto call_constraints,
+		++ppc,              % advance past env size
+		goto Body.
+
+ <#TableOfContents>
+
+###	F. Head Phase
+
+####	Get- operations:
+
+Head is a loop which fetches the next opcode and executes it, as
+specified below. By default these remain in Head 'state' unless
+otherwise indicated. The 68K implementation uses the same loop for
+Head and Read mode, and a different one for Write mode; the C version
+handles write mode using a mode bit.
+
+eg
+	neck():- goto NECK.
+
+	neckcon():- go to NECKCON.
+
+	alloc () :-
+		{ be@< ce -> addr<- ce + 4*(1+byte[ cp[tcb]])
+		| addr<- be },  % i.e., compute end of env stack
+		addr <= [procname[tcb],cb[tcb],ce      ,cp[tcb]],
+		% i.e., [pname        ,cutb   ,previous,cp ]
+		ce<- addr,      % i.e., ce points at cp field, perms follow
+		lcp[tcb] @< address(ce[255])
+		    -> error('environment stack overflow').
+
+	gcalloc():-  % gc alloc is emitted in clauses which end with
+		         % followed by a call subject to LCO
+		{ BNRP_gcflag@/=0     and
+		  lcp[tcb] @= cb[tcb] and   % no cp created by this call
+		  ->{ce[lcp]@=ce and cp[lcp]@=cp[tcb]
+		      -> true   % a dummy cp already created
+		    | dummy_choicepoint
+		    },
+		alloc() .
+
+	get_cons(A,C):- term <- temp[A],
+		case deref(term) of
+			{ var-> bind(term.value,C)
+			| integer->term.value@=C
+			| symbol ->term.value@=C
+			| longint->term.valueA[0,1]@= (C&~sgn)[0,1]
+			| float-> term.value[0,1,2]@=(C&~sgn)[0,1,2]
+			}.
+
+	get_cons_by_value(A,C) :-  %only for state space
+		term<- lookup(C),      % may copy symbol from state space to heap
+		unify( temp[A],term).
+
+	unif addr() :-             % used in state space only
+		A<- ppc -25,      % address of ?
+		term<- (sgn|hp),  %make into longint
+		hp<= [ext_int, A],
+		unify( ce[1], term).
+
+	get struc(A,N) :- term<-temp[A],
+		case deref(term) of
+			{ var -> bind(term.value, (sgnlhp)),
+				hp<= str_hdr|N,
+				goto WSUB
+			| structure->stp <- term.value,
+				stp=> (str hdriM),
+				arity_compatible(N,M),
+				goto RSUB
+			}.
+
+	get list(A) :- term<-temp[A]
+		case deref(term) of
+			{ var-> bind(term.value, (sgn|list|hp)), goto WSUB
+			| list-> stp <- term.value, goto RSUB
+			}.
+
+	get nil(A) :- term<-temp[A],
+		case deref(term) of
+			{ var -> bind(term.value,nil)
+			| list-> nilcheck(term.value)
+			} .
+
+	get_vart(A,T) :- term<-temp[A], deref(term),temp[T]<-temp[A]<-term.
+
+	get_varp(A,P) :- term<-temp[A], deref(term), ce[P]<-temp[A]<-term.
+
+	get_valt(A,T) :- term1<-temp[A], term2<-temp[T], unify_term(term1,term2).
+
+	get_valp(A,P) :- term1<- temp[A], term2<-ce[P], unify_term(term1,term2).
+
+	copy_var(P) :- temp[255]<-ce[P].  % opcode $D5 used only by state space
+
+
+	/*				Read Mode SubMachine (RSUB)
+	
+	This entry is fetch/decode loop for opcodes which handle substructures
+	in read mode: stp points at current position in structure. All of these
+	first do a check for unbound tailvars, and if one is present, they bind
+	it and switch mode to the corresponding Write Mode opcode, thus:
+
+	tvcheck ->T:-case dereftv(stp, T) of
+		{ tailvar-> bindtv( term, list|hp),goto opcode in Write Mode
+		| true
+		}.
+
+	unif_void() :- tvcheck.
+
+	tunif_void() :- goto HEAD.
+
+	end_seq() :- term<-tvcheck,term@=O.
+
+	unif cons(C) :- term<-tvcheck,
+		case deref(term) of
+			{ var-> bind(term,C)
+			| integer->term.value@=C
+			| symbol -> term.value@=C
+			| longint->term.value[1]@=(C&~sgn)[0,1]
+			| float-> term.value[0,1,2]@=(C&~sgn)[0, 1, 2]
+			}.
+
+	unif nil():- term<-tvcheck,
+		case deref(term) of
+			{ var-> bind(term.value,null)
+			| list-> nilcheck(term.value)
+			}.
+
+	unif_vart(T) :- temp[t]<-tvcheck.
+
+	unif_varp(P) :- ce[P]<-tvcheck.
+
+	unif_valt(T) :- term1<-tvcheck,term2<- temp[T], unify(term1,term2).
+	
+	unif_valp(P) :- term1<-tvcheck,term2<- ce[P], unify(term1,term2).
+	
+	tunif_vart(T) :- temp[T]<- (sgn|list|stp).
+	
+	tunif_varp(P) :- ce[P]<-(sgn|list|stp).
+	
+	tunif_valt (T) :- pdl<= [stp, (temp[T] &~ sgn) &~ list].
+	
+	tunif_valp(P) :- pdl<= [stp, (ce[P] &~ sgn) &~ list.]
+
+
+	/*				Write Mode (WSUB)
+	
+	The fetch decode loop processes opcodes appearing in write mode. Except
+	where noted, these remain in write mode when done. */
+	
+	unif_vart(T) :- temp[T]<- hp <= hp.
+	
+	unif_varp(P) :- ce[P]<- hp, hp<= hp.
+	
+	unif_valt(T) :- hp<= temp [T].
+	
+	unif_valp(T) :- hp<= ce [P].
+	
+	tunif_vart(T) :- temp[T]<- (sgn I ( hp <= (list|hp))).
+	
+	tunif_varp (P) :- ce [P] <- sgn I (hp<= (list|hp))).
+	
+	tunif_valt(T) :- hp <= (temp[T] &~ list).
+	
+	tunif_valp (P) :- hp <= (ce[P] &~ list).
+	
+	unif_cons(C) :- hp <= C.
+	
+	unif nil() :- hp <= null[tcb].
+	
+	unif_void() :- hp <= hp.
+	
+	tunif_void() :- hp <= <list| hp.>, goto HEAD.
+	
+	end_seq() :- hp <= 0, goto HEAD.
+	
+	unif_unsafp(P) :- case deref( ce[P]) of
+		{ var-> { ce[P] @< hp -> hp<=ce[P]  % ie already in heap
+			    | hp<=hp, bind(ce[P].value,hp)}
+		| hp<= ce[P]
+		}.
+
+	unif_cons_by_value(C) :-        % opcode $C4 used by state space
+		hp<=O, ptr <- hp,
+		term<- lookup(C),
+		ptr@=hp  % may need to copy symbol from state space to heap
+		-> ptr[-1]<- term  % not new
+		|  ptr[-1]<- (list|hp), hp<-term.
+		
+
+ <#TableOfContents>
+
+###	G. Neck Phase and Cyclic Unification
+
+`Neck` (or `neckcons`) is always the last opcode appearing in the head; indeed, neck phase is really a part of the head unification. However, because of its complexity and importance, it is worth considering as a separate phase. Note that in most clauses (which have no deep unifications), Neck merely transits to the Body loop.
+
+For standard Prolog based on finite terms, full unification can be implemented conveniently as a depth-first recursive algorithm, which can be implemented as usual with a finite state control and auxiliary stack. The first step from this to cyclic unification is to make the algorithm breadth-first, that is, when substructures or sublists are encountered during sequence unification, the pair of subterm pointers is pushed onto the stack for later processing and the current sequences are completed first, thus making the stack explicitly a list of things yet to do. The second step is then to *not* remove pairs from the stack when they have been processed, so the stack as a whole becomes an array of things either to do or already done, and one processes it in order from the bottom (as if it were a queue) until the processing catches up to the top. The last step required to provide termination in the case of cyclic structures is then simply to never put the same pair of pointers on the stack more than once. To reduce the cost of searching the stack, an auxiliary hash table can be used to quickly determine when the stack search is unneccessary.
+
+A special case of importance is tail variable linkages, which can form "looped" lists (as in `X=[1,2,3,X..]`); these were handled by a separate (and somehwat complex to implement) mechanism in Version 3 of BNR Prolog. In Version 4, these are mapped into the standard cyclic structure situation. When one is comparing two sequences with pointers A,B and A encounters a tailvariable bound to a smaller address A' (i.e., a backwards jump in memory), this sequence comparison is deemed to be completed, and the pair A' ,B is conditionally pushed onto the stack for resumption later. Note that backward jumps of tailvariables are rare (since most tailvar constructions arise from recursion, they jump forward on the heap) so this causes relatively few such pushes. This works since every looped structure must contain at least one backwards jump; the second time the first backward jump is encountered, the algorithm will escape from the loop, having traversed it at least once but less than twice.
+
+Currently, the hash coding uses 5 bits (7-2) of each address in two 32-bit bit maps (map 1 ,map2); when both are set the search is needed. The stack entries are addresses (not terms ), so when pairs of substructures are encountered the arity checks are done before pushing the sequence addresses. Also, a fast simple equality scanner is used to advance the sequence pointers as far as possible past constants (particularly the principal functors) before pushing.
+
+The stack and bit maps should be initialized at the start of each head. However, in the assembler version the bit maps are kept in registers which are not available during the majority of head processing. Hence, the bit map/hashing is not done during head codes. The maps are only initialized in the neck code (if the stack is not empty); consequently any of the original pairs of addresses (if ever encountered again) may be put onto the stack again; subsequent occurrences will however be caught so termination is not impaired. Note that the assembler version uses the C-execution stack for its push-down-list, and all tasks use the same area since it is never in use at a task switch.
+
+eg
+		stbase, pdl, readhead: pointer to address;
+		mapl,map2 : array[0,31] of bit;
+		
+	find_pair(Al,A2) :- P<- stbase,
+		lp: P@/=pdl, % may fail
+		    P=>[Bl,B2],
+		    not(Bl@=Al & B2@=A2) -> goto lp.
+		
+	pushpdl( Al,A2) :- H1<-hash(A1), H2<-hash(A2),
+		{ map1[H1]@=1 and map2[H2]@=1 and findpair(A1,A2) ->true
+		| map1[H1]<-map2[H2]<-1, pdl<= [A1,A2]
+		}.
+		
+	unify_seq(Al,A2) :-
+		next: ++Al,
+		dref: T1<- [Al],
+			{ Tl@=O -> case derefseq(A2,T2) of
+				{ endseq -> true
+				| tailvar -> bindtv(A2,0)
+				}
+			| T1>O & T1.list ->
+				{ B1<- (T1 &~ list),
+				  B1 @= A1 -> bindtv(A1,A2)
+				| B1 @> A1 -> A1<-B1, goto dref
+				| pushpdl(B1,A2)  %loop detection
+				}
+			| case derefseq(A2,T2) of
+				{ endseq ->fail
+				| tailvar -> bindtv(A2,A1)
+				| unify_term(T1,T2), goto next
+				}
+			}.
+
+	gen unify:- readhead<- stbase,
+		  mapl<-map2<- 0,
+		loop:{ pdl@=readhead ->true
+		     | readhead=>[A1,A2], unify_seq(A1,A2), goto loop}
+
+	neck():- pdl@/=stbase -> gen_unify,
+		goto body.
+
+	neckcon(E) :-
+	% emitted by compiler whenever first call of body is compiled inline
+	% E is byte giving current environment size
+	% when E=O, next opcode is dealloc( 06), else it is noop
+		pdl@/=stbase -> gen_unify,
+		{ BNRPflags[tcb][c_bit]=O -> ppc<- ppc+2, goto body
+		            %skips 2 bytes (env size + dealloc)
+		| fire_constraints
+		}.
+
+	fireconstraints:-
+		N=O & ppc[1]@=6 -> alloc,
+		cp[tcb]<- ppc,  % NOTE: ppc points at E (env size)
+		call_constraints.
+
+	NOTE: when and if the constraints complete, execution returns to
+	this point in the Prolog code, where either dealloc is called (if alloc
+	was called beforehand) or else a noop, before resuming the processing of
+	the body of this clause.
+
+ <#TableOfContents>
+
+###	H.Body Phase
+
+Body codes can be divided into two classes in several ways: the ones required for basic Prolog versus additonal functionality (e.g., inline arithmetic); those which require no special handling for `clause` versus those that do (eg call,cut); and those coded directly versus those coded with an escape mechanism. For the most part we have arranged that these largely agree- most basic opcodes not requiring special handling for `clause` are coded directly.
+
+In the implementation there is one case table for the 255 direct
+codes, and effectively two for the escape codes, one for use with
+`clause` and one for normal execution.
+
+####	Direct Body Codes
+
+The semantics of the direct codes are similar (and usually identical) to the that of head codes in write mode.
+
+eg
+	proceed :- ppc<- cp[tcb] + 1,
+		       inclause<- 0,  % clear "clause mode"
+		       gc_check.      % in cut section under extended body codes
+
+	dealloc :- cb[tcb]<- cutb[ce],
+		       cp[tcb]<- cp[ce],
+		       ce<- previous[ce].
+
+	noop.
+
+	fail:- goto fail.
+
+	put_cons(A,C) :- temp[A]<-C.
+
+	put_struc(A,N) :- temp[A]<-(sgn|hp), hp<= (str_hdr|N)
+
+	put_list(A) :- temp[A]<-(sgn|list|hp).
+
+	put_nil(A) :- temp[A]<-null[tcb].
+
+	put_vart(T,A) :- temp[A]<-temp[T]<- hp <= hp.
+
+	put_varp(P,A):- temp[A]<-ce[P]<- address(ce[P]).
+
+	put_valt(T,A) :- temp[A]<-temp[T].
+
+	put_valp(P,A) :- temp[A]<-ce[P].
+
+	put_void(A) :- temp[A]<- hp<=hp.
+
+	push_vart(T) :- temp[T]<- hp <= hp.
+
+	push_varp(P) :- ce[P]<- hp <= hp.
+
+	push_valt(T) :- hp<= temp[T].
+
+	push_valp(T) :- hp<= ce [P].
+
+	tpush_vart(T) :- temp[T]<- (sgn | (hp<= (list | hp))).
+
+	tpush_varp(P) :- ce[P] <- (sgn | (hp<= (list | hp))).
+
+	tpush_valt(T) :- hp <= temp[T] &~ list.
+
+	tpush_valp(P) :- hp <= ce[P] &~ list.
+
+	push_cons(C) :- hp <= C.
+
+	push_void :- hp <= hp.
+
+	tpush_void :- hp <= list | hp.
+
+	push_end :- hp <= 0.
+
+	push_unsafp(P) :- case deref( ce[P]) of
+		              { var & not in heap-> hp<=hp,bind(ce[P],hp)
+		              | hp<=ce[P]
+		              }
+
+	push_unsaft(T) :- case deref( temp[T]) of
+		              { var & not in heap-> hp<=hp,bind(temp[T],hp)
+		              | hp<=temp[T]
+		              }.
+
+	escape:- goto body_extensions.  % $07
+
+ <#TableOfContents>
+
+###	I. Extended Body Codes (normal)
+
+There are two versions of this fetch/decode loop-- one for normal operations and one for clause mode, which is covered in the next section. By default these remain in the body _extension state.
+
+eg
+	% leftover opcodes (ie no room in primary table)
+	put_vart(T,A):- temp[A]<-temp[T]<- hp <= hp, goto body.
+
+	putunsaf(P,A):- case deref( ce[P])
+		{ var and not in heap
+			-> temp[A]<-hp, hp<=hp, bind(ce[P],temp[A])
+		| temp[A]<-ce[P]
+		}, goto body.
+
+	push_nil:- hp<= null[tcb], goto body.
+
+
+	%            Calls
+	%
+	call(Pred/N,E) :- cp[tcb]<- ppc,
+		ecall(Pred,N).
+	% NOTE: calls leave the ppc pointing at the environment length byte E in
+	% the code bytecode stream which is at the end of the opcode.
+
+	exec(Pred/N) :- ecall(Pred,N).
+
+	call i:- cp[tcb]<- ppc, goto exec i.
+	% NOTE: metacall/metaexec are issued by the compiler whenever the
+	% principal.functor or arity? is unknown at compile time.
+
+	exec_i :-  % meta call & exec call structure is in temp[1]
+		case deref( temp[1]) of
+			{ symbol-> ecall( temp[1],O)
+			| structure-> expand_call( temp[1]~sgn)
+			| list-> ecall('$calllistindirect',1)
+			| error( nonexecutable_term)
+			}
+
+	expand_call( P:pointer) :- {Func,T:term, arity:integer},
+		stp<-P,
+		stp=> ( str_hdr|_),
+		stp=> Func,
+		deref( Func )@/=symbol-> error( nonexecutable_term),
+		arity<-0,
+		loop: case derefseq(stp)->T of
+			{ endseq -> ecall( Func, Arity)
+			| tailvar -> ecall( Func,-Arity)
+			| Arity++, temp[Arity]<-T, goto loop
+			}.
+
+
+	%                    !
+
+	/*
+	Normal !, cut and associated failexit appear in two versions, one for
+	use in clauses with environments, and one for use in leaf clauses or
+	after a dealloc. Recall that environments contain pname (the name of
+	the predicate that created it), cutb (the value of lcp when the env was
+	created, and previous, a pointer to the previous environment; these
+	fields are used and sometimes modified by the various cut/failexit
+	codes.
+	*/
+
+	%                 Edinburgh cut !
+	ecut:-      % Ext $01
+		{ cutb[ce]@>lcp[tcb] -> stdcut(cutb[ce])
+		| goto Body }.
+
+	dcut:-      % Ext $02
+		{ cb[tcb]@> lcp[tcb] -> stdcut(cb[tcb])
+		| goto Body }.
+
+	stdcut( Target:^choicepoint):-
+		lcp[tcb]<-Target,
+		trimtrail.
+
+	trimtrail:- {C:^choicepoint; OT,TE:^trail_entry,T:term,A:address},
+		C<- lcp [tcb],
+		bh<- hp[C], be<- critical[C],
+		OT<-TE<- te[C],
+		while te[tcb]@/=TE do
+			{ --OT, T<-[OT], --OT,A<-[OT]
+				{ (A@<hp and A@<bh
+					and (T>O or T.addr@<bh))  % var,tvar or redundant
+					                          % interval update
+					or A@<be                  % env var
+					or A@>lcp                 % otherwise (temp atoms)
+						  -> --TE, [TE] <-T, --TE, [TE] <-A 
+				}
+			},
+		te[tcb]<- TE.
+
+	%                   gc check:-
+	/* This is used in proceed, it conditionally does a gc when 'control'
+	returns from the call which created the lcp, provided gc is enabled
+	and it is worth doing, ie bytes used on heap.since lcp was created
+	exceeds BNRP gcflag
+	*/
+
+	gc check:- % used in proceed
+		{ ce @< be        and      % above lcp boundary
+		  BNRP_gcflag@/=0 and      % gc is enabled
+		  ce[lcp]=ce and cp[lcp]= ppc-1  % i.e., former cp
+		       % i.e., returning from call that created the lcp
+		  -> { (bh + BNRP gcflag) @> hp
+				  -> gc(O), % no args to audit
+				arity[lcp]@= -1 -> stdcut(previous[lcp])
+				    % discards any dummy choicepoint
+			 }.
+
+	/*             cutreturn     ( coded as dcut,proceed )
+	This combination occurs at the end of determinized clauses,
+	e.g. f:- g, ! .
+	Here f (or g) could have created a choicepoint useable for gc
+	at the end of the clause, but ! discards it before it can be used.
+	By combining ! and proceed into a single action, one can avoid this
+	problem. So the semantics is to try to use the target cp ( which will be
+	the lcp after the ! is done) for gc, and if it is not suitable (I think
+	it never is except when it is a dummy choicepoint? ), then use the next
+	later cp, ie. one created by f or g in the example above.
+	*/
+	
+	cutreturn:-       % Ext $02
+		cb[tcb] @> lcp[tcb]
+		  -> {possiblegc(cb[tcb]), stdcut(cb[tcb])},
+		ppc<- cp[tcb)+1,  % do the proceed part (minus gc_check of course)
+		goto Body.
+
+	possiblegc( CP:^choicepoint):-
+		BNRP_gcflag@/=0 and
+		{ hp[CP] + BNRP_gcflag) @> hp
+		-> { ce[CP]@=ce- and cp[CP]@=cp[tcb]
+		      % i.e., returning from same call that created this CP
+			  -> { arity[CP) @= -1 -> cb[tcb)<-previous[CP],
+				     % discards dummy choicepoint
+				   gc(O) %no args to audit
+				 | CP<-next_clause_later_than(CP),
+					{ ( hp[CP] + BNRP gcflag) @> hp ->
+						{CP@/=lcp[tcb) => stdcut(CP)},
+					  gc(O)
+					}
+			}
+		} .
+
+	/* cutexec ( Extended $06 )
+	This combination is emitted for a ! just before the last (LCO'd) call in
+	a body. It works in conjunction with gc alloc which may have created a
+	dummy choicepoint. The intended effect-is to permit multiple garbage
+	collections during long-running deterministic tail-recursions and LCOs,
+	each collecting from the start of the run. The gc threshhold is inflated
+	for the size test to prevent gc from being too frequent. Note that the
+	dummy choicepoint (if there is one) is left in place and will be removed
+	by proceed at the end of the run.
+	*/
+
+	cutexec(Pred/N) :-
+		cb[tcb] @> lcp[tcb) -> stdcut( cb[tcb)),
+		BNRP_gcflag@/=0  and  % gc is enabled
+		ce[lcp)=ce       and
+		cp[lcp]= cp[tcb] and
+		{ (bh + 64* abs(BNRP gcflag) )@> hp
+		-> gc(N)},  % N args-to audit
+		ecall(Pred,N).
+
+	/* cut, cut(Name) and failexit, failexit(Name) :
+	These have been provided only for backwards compatibility to Version 3,
+	but are rather messy to handle. Note that there is a fundamental
+	inconsistency between them and LCO. It has been left as a user's
+	responsibility to ensure that this doesn't cause problems as the
+	compiler cannot do it unless it has a global view of the entire (static)
+	system. Also, the algorithm for cut is not obviously correct:
+	can it sometimes cut the wrong choicepoint (even if in right location
+	and with right ce) ? I think that for cut/0 one can make an argument
+	based on the validity of the ! code. For cut/1 I think that the
+	possible problems were all solved by removing the pointers to
+	choicepoints when deep cutting them (see deepcut2 below) .
+	*/
+	
+	ccut:- snip( cutb[ce],previous[ce]), goto Body.     % extended $31
+
+	cdcut:- snip( cutb[ce],ce), goto Body.              % extended $32
+
+	ccutfail:- snip( cutb[ce],previous[ce]), goto Fail. % extended $33
+
+	cdcutfail:- snip( cutb[ce],ce), goto Fail.          % extended $34
+
+	snip( CP:^choicepoint,E:^environment):- {P,NP:^choicpoint},
+		NP<- lcp[tcb],
+		{NP@<CP -> P<- previous(NP),
+			while P@<CP do { NP<- P, P<- previous(NP)},
+			P@=CP ->
+				{ce[P]@=E ->lcp[tcb]<-NP
+				| lcp[tcb]<-CP
+				}
+		}.
+
+	cut(Name) :- deep_cut(Name), goto Body.
+
+	failexit(Name) :- deep_cut(Name), goto Fail.
+
+	deep cut(Name) :- {C:^environment}
+		symbol(Name),
+		C<- ce,
+		loop: { Name@= pname[C]
+				-> {cutb[C]@>lcp[tcb] -> deepcut2( cutb[C])}
+			  | previous[C]@=O -> error(Cuterror)
+			  | C<- previous[C), goto loop
+			  } .
+
+	deepcut2( CP:Achoicepoint) :-{C:Aenvironment}
+		lcp[tcb]<-CP,
+		C<- ce,
+		loop: { Name@= pname[C] -> trimtrail
+			  | cutb[C]<- CP, C<- previous[C], goto loop
+			  }.
+
+
+	%               Filters
+
+	vart(T):- var@=deref( temp[T]), goto body.
+
+	tvart(T):-tvar@=derefseq( temp[T]), goto body.
+
+	varp(P):- var@=deref( ce[P]), goto body.
+
+	tvarp(P):- tvar@=derefseq( ce[P]), goto body.
+
+	% For next two ops bit masks are encoded in a byte as [...RISFL) where
+	% L- list, S- symbol, F-structure I- integer, R- float
+
+	test(T,Mask)->Bool:- case deref(temp[T]) of
+		{ list->Mask[O),
+		| structure->Mask[1],
+		| symbol->Mask[2]
+		| integer->Mask[3)
+		| longint->Mask[3)
+		| float->Mask[4]
+		}.
+
+	testp(P,Mask) :-test(ce[P],Mask)@=1, goto body.
+
+	testt(T,Mask) :-test(temp[T],Mask)@=1, goto body.
+
+
+	%                 Arithmetic
+	Makes use of an arithmetic stack
+		astack[0..9] of {longint|float}
+		atype[O..9] of boolean,  % 1 if float, 0 for integer
+		asti : 0..9 %initialized to 0 on entry to Body ext loop
+			(i.e., on escape code)
+
+	% some utilities:
+
+	arithterm(X)->Y :-  % converts a number to appropriate representation
+		case X
+		{ short: Y<- int_tag|($0000FFFF & X)
+		| long:  Y<- (sgn|hp), hp<= [int_hdr, x]
+		| float: Y<- (sgn|hp), hp<= [flt_hdr,X[1],X[2]]
+		}.
+
+	arith_push(Tag, V):- case Tag of
+		{ int:  astack[asti]<- V.val, atype[asti)<-0
+		| long: astack[asti]<- V.addr[1],atype[asti]<-0
+		| float:astack[asti]<- V.addr[1,2],atype[asti]<-1
+		| goto arithmetic_decompilation
+		},
+		asti++.
+
+	eval_cons:-
+
+	eval_sym:-
+
+
+	pop_vart(T):- asti@=O,temp[T]<- arithterm(astack[O]), goto Body.
+
+	pop_valt(T):- deref(temp[T]),
+		unify(temp[T],arithterm( astack[O])),
+		goto Body.
+
+	pop_varp(P):- asti@=O,ce[P]<-arithterm( astack[O]), goto Body.
+
+	pop_valp(P):- deref(ce[P]),
+		unify(ce[P],arithterm( astack[O])),
+		goto Body.
+
+	eval_valt(T):- Tag<- deref( temp[T]), arith_push(Tag,temp[T]).
+
+	eval_valp(P):- Tag<- deref( ce[P]), arith_push(Tag,ce[P]).
+
+
+	% some more arithmetic utilities to perform operations:
+
+	monadf(Op):-  % coerces integer args to float first
+		~atype[asti] -> astack[asti]<-float(astack[asti]),
+		astack[asti]<-float(Op)(astack[asti]),
+		atype[asti]<-1.
+
+	dyadic( Op ):- asti<- asti - 1,
+		{(~atype[asti] and -atype[asti+1])
+			-> astack[asti]<- Op( astack[asti], astack[asti+1])      %integer
+		| { ~atype[asti] -> float(astack[asti]),
+			~atype[asti+1] -> float(astack[asti+1]),
+			astack[asti]<- float(Op) ( astack[asti],astack[asti+1])  %float
+			atype[asti]<-1}}.
+
+	arel( Rel ):- asti<- asti - 1,
+		{(~atype[asti] and ~atype[asti+1])
+			-> astack[asti] Rel astack[asti+1]        % integer
+		| atype[asti] -> float(astack[asti]),
+		  -atype[ asti+1] -> float(astack[asti+1]),
+		  astack[asti] float(Rel) astack[asti+1]
+		} .
+
+	exponentiation:- ~atype[asti],  % only integer exponents
+		N <- astack[asti],
+		--asti,
+		{ atype[asti)
+			-> astack[asti)<-flpower( astack[asti],N)
+		|	{ N>O -> astack[asti]<-intpower( astack[asti],N)
+			| N=O -> true
+			| {astack[asti]=O -> error(dividebyzero)
+			| astack[asti]<-flpower(1.0/astack[asti],-N),
+			  atype[asti)<-1,
+			}
+		}.
+
+	+     :- dyadic(+).
+	-     :- dyadic(-).
+	*     :- dyadic(*).
+	//    :- dyadic(//).
+	/     :- dyadic(*).
+	mod   :- dyadic (mod).
+	min   :- dyadic(*).
+	max   :- dyadic(*).
+	**    :- exponentiation.
+
+	float    :- astack[asti]<- float[astack[asti], atype[asti]<-1.
+
+	integer  :- monadf(int).
+	floor    :- monadf(floor).
+	ceiling  :- monadf(ceiling).
+	round    :- monadf(round).
+
+	abs    :- { atype[asti]-> astack[asti]<-abs([astack[asti])
+	          | astack[asti]<- fabs(astack[asti])
+	          }.
+	neg    :- { atype[asti]-> astack[asti]<- - (astack[asti])
+	          | astack[asti]<- fneg(astack[asti])
+	          }.
+
+	inc    :- monadf( inc).  % X<- X+1
+	dec    :- monadf( dec).  % X<- X-1
+	srt    :- monadf( sqrt).
+	exp    :- monadf( exp ).
+	ln     :- monadf( ln ).
+	sin    :- monadf( sin ).
+	cos    :- monadf( cos ).
+	tan    :- monadf( tan ).
+	asn    :- monadf( asin).
+	acs    :- monadf( acos).
+	atn    :- monadf( atan).
+
+	==    :- arel( == ), goto body.
+	=<    :- arel( =< ), goto body.
+	>=    :- arel( >= ), goto body.
+	<     :- arel( < ),  go to body.
+	>     :- arel( > ),  go to body.
+	<>    :- arel( <>),  go to body.
+
+	/* a non-numeric value has appeared in an arithmetic
+	expression (possibly a variable or structure)- convert
+	the existing arithmetic stack into a stack of terms of
+	the appropriate type and finish processing using "clause"
+	versions of the opcodes--this results in a Prolog call
+	to a Prolog implementation of the arithmetic relation.
+	*/
+
+	arithmetic_decompilation:- {J:O .. 8},
+		for J=O,asti do
+			{ astack[J]<- arithterm( astack[J]),
+		goto Clause_mode
+
+ <#TableOfContents>
+
+###	J. Extended Body Codes (Clause mode)
+
+Clause mode is normally controlled by setting the 'inclause' bit, which causes the "escape" code ($07) in Body to jump to the Clause_mode table instead of to the normal table of body extension codes. The "inclause" bit is cleared on proceed or clause mode exec. The Clause_mode table is also entered when an arithmetic eval code encounters a non-numeric value; execution then remains in Clause mode until the final arithmetic code in the sequence, and control returns to normal body mode with inclause remaining 0.
+
+In Clause_mode the principle function is to capture call attempts in a data structure on the heap (i.e., to build the clause representation) many of the opcodes must be converted to call form first.
+
+By default these codes remain in the Clause mode state unless indicated.
+
+eg
+	safe( T, S) :-
+		{var@=deref(T) and T not in heap-> bind(T,hp), hp<=S<-hp
+		I S<-T } .
+
+	mk callO( Pfunc) :-append to list(sgnlhp),
+		hp<= [ (hdrll), Pfunc,O].
+
+	mk_calll( Pfunc,T:term) :- append_to_list(sgnlhp),
+		safe(T,Sl),
+		hp<= [ (hdrll), Pfunc,Sl,O].
+
+	mk_call2( Pfunc,Tl:term, T2:term) :-append to list(sgnlhp),
+		safe(T,Sl), safe(T2,S2), - -
+		hp<= [ (hdr 11), Pfunc, Sl, S2, 0] .
+
+	ecut:- mk callO("!"), goto body.
+	dcut:- mk=:callO("!"), goto body.
+
+	eval cons:- ??
+
+	escape:- goto body.
+
+	metacall(Pred/N) :-append_to_list(temp[l]).
+
+	call(Pred/N) :- append_to_list(sgnlhp),suspend( Pred,N).
+
+	exec(Pred) :-append_to_list(sgnlhp),suspend( Pred,N).
+
+	metaexec(Pred) :-append_to_list(temp[l]).
+
+	$0c, $0d,$oe,$of
+
+	vart(T) :- mk_calll('var',temp[T]), goto body.
+	varp(P) :- mk_calll('var', ce[P]), goto body.
+
+	tvart(T) :- mk_calll('tvar',temp[T]), goto body.
+	tvarp(P) :- mk_calll('tvar', ce[P]), goto body.
+
+	morechoicepoints:- mk calll(morechoicepoints,??), goto Body.
+	ccut:- mk callO( 'cut1 ), goto body.
+	ccutfail:~ mk_callO('failexit'), goto body.
+
+	cdcut:- mk callO( 'cut'), goto body.
+	cdcutfail:~ rnk_callO('failexit'), goto body.
+
+	cdcut:- mk calll( 'cut', temp[l]), goto body.
+	cdcutfail:~ mk_calll('failexit', temp[l]), goto body.
+
+	label env:- mk_call( ?? ) .
+
+	filtert(T,Mask) :-dec mask(Mask,F),mk calll(F,temp[T]),goto body.
+	filterp(P,Mask) :- dec=mask(Mask,F),mk=calll(F,ce[P]), goto body.
+
+	dec_mask(Mask,Syrnbol) :- Symbol<- BNRP_filternarnes[Mask].
+
+	popvalt(T,Mask) :- mk_calll('==', temp[T]), goto body.
+	popvalp(P,Mask) :- mk_calll('==', ce[P]), goto body.
+
+	popvart(T,Mask) :- mk calll('is', temp[T]), goto body.
+	popvarp(P,Mask) :- mk=calll('is', ce[P]), goto body.
+	
+	evalt(T,Mask) :- asti++, astack[asti]<-temp[T], goto body.
+	evalp(P,Mask) :- asti++, astack[asti]<-ce[P], goto body.
+	
+	cl_dyadic( Func) :- T<- (sgnlhp),
+		hp<= [ (hdrl3), Func, astack[asti-1]],
+		hp<= [ astack[asti], 0],
+		--asti, astack[asti]<- T.
+
+	cl_monad( Func) :- T<- (sgnlhp),
+		hp<= [(hdrl2), Func, astack[asti], 0],
+		astack[asti]<- T.
+
+	call arithmetic(F) :- asti<-0,
+		{ inclause -> mk call2(F,astack[O],astack[1]), goto Body
+		| temp[1]<- astack[O], temp[2]<-astack[l], ecall2(F,2)
+		} .
+
+	+     :- cl_dyadic('+').
+	-     :- cl_dyadic('-').
+	*     :- cl_dyadic('*').
+	//    :- cl_dyadic('ll').
+	/     :- cl_dyadic('*').
+	mod   :- cl dyadic('mod').
+	min   :- cl=dyadic('min').
+	max   :- cl_dyadic('max').
+	**    :- cl _dyadic (' **').
+
+	float    :- cl_monad('float').
+	integer  :- cl_monad('integer').
+	floor    :- cl_monad('floor').
+	ceiling  :- cl_monad('ceiling').
+	round    :- cl_monad('round').
+	abs      :- cl_monad('abs').
+	neg      :- cl_monad('-').
+	srt      :- cl_monad('sqrt').
+	exp      :- cl_monad('exp').
+	ln       :- cl_monad('ln').
+	sin      :- cl_monad('sin').
+	cos      :- cl_monad('cos').
+	tan      :- cl_monad('tan').
+	asn      :- cl-monad('asin').
+	acs      :- cl_monad('acos').
+	atn      :- cl_monad('atan').
+	
+	==   :- call_arithmetic('=='), go to body.
+	=<   :- call_arithmetic('=<'), go to body.
+	>=   :- call_arithmetic('>='), goto body.
+	<    :- call_arithmetic('<'), go to body.
+	>    :- call_arithmetic('>'), go to body.
+	<>   :- call_arithmetic('<>'), go to body.
+
+ <#TableOfContents>
+
+###	K. Garbage Collection
+
+The garbage collection strategy and its rationale, in a somewhat abstract and simplified form, were described in "An Incremental Garbage Collector for WAM-Based Prolog," by W. Older and J. Rummell, in the *Proceedings of the Joint International Conference and Symposium on Logic Programming* (Washington, D.C.), published by MIT Press, 1992. (Internal CRL document reference number 9is 20328.) It is assumed below that this high level description has already been understood thoroughly.
+
+Garbage collection is often both delicate and subtle in terms of the amount of knowledge or assumptions that it *implicitly* makes about the system, and it may also depend in essential ways on what would otherwise be inessential details, both of which make it very context-dependent. A number of such points are discussed briefly below:
+
+1..
+	*	The fundamental basis of the method is based on the observations that (a) the principle difficulty with garbage collecting a part of a system is that of locating all external references into the target region, and (b.) the choicepoint + trail mechanism of Prolog provides just this information provided that garbage collection only occurs at certain logical times.
+	
+	*	Although this is true of any choicepoint, there are extra difficulties involved unless it is the last choicepoint, since (a) any later choicepoints create internal boundaries in the target region which must be respected, (b). for any choicepoints except the last one, they and their associated trails must be modified during gc to track the movement of heap objects, and this includes the *old values* of trailed items and constraints attached to *bound* variables. Thus by limiting to the use of lcp, these complications can be avoided.
+	
+	*	If gc were to occur at any time before the return from the call instance which created the lcp, the contents of all environments created after lcp must be audited. Environment variables, however, may not yet be initialized and may therefore contain syntactically reasonable but incorrect terms as well as syntactically incorrect garbage. By strictly limiting the time at which gc is permitted, one can avoid auditing environments, and hence avoid the problems created by uninitialized permanent variables.
+	
+	*	In general, when there may be internal choicepoint boundaries present, one cannot (a) short circuit variable linkage chains, (b) expand and eliminate bound tailvar linkages, or (d) ignore constraints on bound vars and tail vars. In the absence of such boundaries, all three of these can and are done.
+	
+	*	The algorithm used is one-pass over the external references, which are left either unchanged or updated to their final forms, *which are incorrect until the gc is completely finished*. Therefore, it is *essential* that all the addresses of the external references be distinct, else one will encounter such apparently incorrect terms.
+
+The uniqueness of the external audited addresses is maintained by the system according to the following arguments. If there are any call arguments to audit, they are naturally mutually distinct and also distinct from any trailed addresses (since temp addresses are never trailed.) For normal Prolog, a variable (or tailvariable) address is ever only trailed once, since it can be bound but once. Interval bounds, which are also trailed, are normally not a problem since the interval code will only trail them at most once after each choicepoint. However, if chociepoints are removed by cut (of any kind) during interval constraint processing, it is possible for the same interval bound address to appear multiple times in the trail associated with lcp. The second or later occurrence encountered would then be invalid during gc. This problem is eliminated by having trail trimming detect and remove the extra entries. (They are detectable just after a cut since they have old values on the trail which are later than bh. See the trail trimming code.) Similar problems could occur if variable chains were ever dereferenced outside of the target region, as these can converge and thus lead to similar encounters of already processed terms, or if auditing of environment variables is done(since these may also be on the trail).
+
+*Distinct* external references may also refer to the *same* object within the target region. (For example, several variables may be bound to the same structure or to parts of the same structure on the heap.) These are handled by replacing each cell moved to the copy stack by a forwarding address (coded as a tailvariable). When encountering such a token subsequently, the appropriate action must be taken.
+
+The specification given here is based on the wama version (as usual) and ignores alignment issues (as usual). The C version of the gc algorithm is quite different in structure and there are some significant second order differences in what it does and in what order. This may result in different final heap sizes for the two algorithms. In particular, the short circuiting of variable chains in the target region is done differently, as is the unwinding of tail vars, and the tagging of moved items is different and incomplete, which may give rise to some duplication of shared data structures.
+
+eg
+	do_gc( Nargs: number):-  % Nargs>=O , hp is used as writehead
+		{ StartN, EndN, Readhd, TE, A: address,
+		  LCP:^choicepoint, Delta,T: longint, J:0 .. 255},
+		qhead[tcb]@/=0 ->exit,
+		StartN <- hp,           % bh to StartN is target region,
+		Delta <- hp - bh,
+		EndN <- StartN + Delta, % StartN to EndN is copyto region
+		EndN @> te[tcb] ->error( heap_overflow),  %insufficient room
+		BNRP_numgc ++,
+		{Nargs>O -> foreach J=1,Nargs do temp[J]<- preserve( temp[J])},
+		LCP<- lcp[tcb],
+		TE<- te[tcb],           %audit trail from lcp to present
+		while TE @< te[LCP] do {
+			A <- [TE],
+			{ (A@> heapbase and A@<bh) or (A@>envbase and A@<be)
+				-> ([A] <- preserve ( [A]))
+			} ,
+			TE++, TE++
+		} ,
+		Readhd<- StartN,        % process rescued stuff "recursively"
+		while Readhd @< hp do {
+			T<- [Readhd],
+			{ T@=O -> true
+			| T @= ( ext_int| 1) -> Readhd++  % skip longints & floats
+			| T @= ( ext_flt| 2) -> Readhd++, Readhd++
+			| [Readhd]<- preserve(T)
+			},
+			Readhd++
+		},
+		EndN <- hp,
+		EndN @> te[tcp] ->error( heap_overflow),
+		Readhd<-StartN,
+		hp<- bh,
+		while Readhead@<EndN do { hp<= [Readhd], Readhd++}.
+
+	preserve(T)->S :-  % S will be same type as T
+		{ T > 0 -> S<- save_var(T)  % vars & tailvars
+		| S<- save_nonvar(T)
+		}.
+
+	save nonvar(T)->S :-
+		{ atm[T]-> -> S<- T  % atoms, short ints
+		| lst[T] -> S <- save_list(T)
+		| S<- save_struc(T)
+		}.
+
+	save var(T)->S :-
+		{ lst[T] -> S<-gcdref_tvar(T) | S<-gcdref_var(T) }.
+
+	gcdref_var(T)->S:-
+		loop: { T@< bh -> S<- T       % outside target
+			  | T@< EndR -> T1<-[T],  % in target region
+				{ T1>O and T1@=T -> S<- unboundvar(T),
+				| T1 > 0 -> T<- T1, goto loop,
+				| S<- save_nonvar(T)
+				}
+			  | (T &~ lst) @< hp -> S <- (T - Delta)  % relocate
+			  | S<-T                  % outside of target
+			
+			  }.
+
+	unboundvar(T)->S :- S <- hp- Delta,
+		hp<=hp,
+		T++,
+		{ [T] @= Cmarker and T@<EndR -> T++, hp<= [Cmarker, [T]] }.
+
+	gcdref tvar(T)->S
+		loop: A <- T &- lst,
+			{ A @< bh -> S <- T,
+			| A @< EndR -> T1<- [A),  % in target region
+				{T1 >0 and T1[lst]    % tvar
+				  -> { T@=T1 -> S <- lst | unboundtvar(A)
+				     I T<-T1, goto loop
+				     }
+				| S<- lst|hp, _ <- copy_seq(A)
+			| A @< hp -> S <- (lst| A - Delta)  % relocate
+			| error  % bad tvar address (not in heap)
+			} .
+
+	unboundtvar(A)->S :- S <- (lst|(hp- Delta)),
+		hp<=hp,
+		A++,
+		{ [A] @= Cmarker and A@<EndR -> A++, hp<= [Cmarker, [A]] }.
+
+	save list(L)->S :- T<- L &~ sgn,  % corresp. tvar
+		S<- (sgn|gcdref_tvar(T)).
+
+	save_struc(T)->S :- A<- T &~ sgn,
+		{ A @< bh -> S <- T
+		| A @< EndR
+			-> Tl <- [A],
+			{ T1>O and T1[lst]  %relocation tvar
+				-> A1<- T1 &~ lst,
+				{ Al@> EndR -> S<- (sgnl (Al- Delta)) }
+			| T1 @= ( int_hdr| 1)
+				->[A]<-(lst|hp),S<- (sgn|hp), hp<= [T1,A[1]],
+			| T1 @= ( flt_hdr| 2)
+				->[A]<-(lst|hp),S<- (sgn|hp), hp<= [T1,A[1,2]],
+			| T1 @= ( str_hdr|arity)
+				->[A] <~ (lst|hp),  %forward
+				  S <- (sgn|hp),
+				  A1<- hp, hp<= T1,  % copy structure
+				  A++,
+				  B<- copy_seq(A),
+				  { B-> Length<- max( - (hp - A1),-maxshort)
+				  | Length<- min((hp -A1),maxshort)},
+				  [A1] <- (str_hdr| Length)  % fixup arity
+			}
+		} .
+
+	copy_seq( A:address)-> Indef:boolean :-
+		loop: T<-[A],
+			[A]<- (lstlhp),A++,  % leave forwarding address as tvar
+			{ T@= 0 -> hp <= 0, Indef<- 0
+			| T>O and lst[T] and (T &~lst)@< A-> hp<= gcdref_tvar(T)
+			| hp<=T, goto loop
+			}.
+
+ <#TableOfContents>
+
+###	L. Interval Arithmetic
+
+The interval arithmetic subsystem in Version 4 consists of two principle components. There is Prolog code in Base to manage the interval data structures, perform type inferencing and map arithmetic expressions into the basic interval primitives, and a low level (C or Assembler) implementation of the interval inferencing engine.
+
+The data structures for intervals are standard BNR Prolog data structures: an interval is just a Prolog variable with a freeze constraint of a certain type representing boolean, integer, or real domains. These domain constraints are always the first one on the list of frozen goals, if there is more than one frozen goal, and this property is maintained by code in Base that combines frozen goals when constrained variables are unified.
+
+The domain constraints have the form:
+ `     Type( Variable, List_of_Nodes, LB, UB)`
+where `Type` is the internal name of the type (boolean,integer,real), `Variable` is the constrained variable, `LB` and `UB` are its current bounds (floats), and `List_of_Nodes` is an indefinite list of nodes of the form
+ `     Operation(Z,X,Y)`
+where `Operation` is the (obscure,local) name of a primitive interval operation, and `X`, `Y`, `Z` are numerics, constrained variables, or the symbol `nil`. (Nodes are always of arity 3 for implementation reasons, so `nil` is used as a dummy argument.) Boolean domains are missing the bounds, since they will always be 0.0 and 1.0.
+
+The interface to the interval inferencing engine is via the primitive calls:
+ `	$iterate(Node,link)`
+ `	$iterate(Node)`
+or `	$iterate (List_of_Nodes)`.
+
+The first form is used to link a newly created node into the current network, and execute it, and continue chasing its consequences until a fixed point is reached. Linking a node means, for each variable argument, to append the node onto the node lists of its domain. (This is done by binding the tail variables in the normal way, while keeping the lists indefinite.) If a failure occurs, all changes that have been made (including the linking) are logically undone through the usual trail mechanisms. The second form -- used mostly in enumeration routines with a constant argument -- is the same except that it skips the linking.
+
+(Note that nodes are linked in FIFO order, and this determines their scheduling order during iteration. This order is the exact opposite of that used in Version 3, but of course does not affect the final results; tests showed that the FIFO ordering is in most cases better as well as giving more consistent performance than the ordering used in Version 3.)
+
+The total network attached to an interval variable is a graph structure, of course, but it is not technically a cyclic structure (in this implementation) because the linkage is partly through the `freeze` mechanism. Interval variables for many purposes appear just as if they are simple variables, so for example writing an interval variable doesn't wind up trying to output the whole network of relations tied to it. The other, more substantial, reason for using freeze is that it permits ordinary Prolog unifications of interval variables to constants, wherever they may occur, to trigger interval operations. This is is done easily by having the internal names of the interval types be the names of internal Base predicates which use `$iterate(List of_Nodes)` to propagate the instantiation into the interval network.
+
+There is some interaction between the interval network and garbage collection. First, since the network is composed of normal (BNR) Prolog data structures, there is no need to extend the garbage collection algorithm explicitly to deal with different encodings. But note that the networks *are* cyclic structures so far as garbage collection is concerned, since frozen goals must be moved with their variables. Thus if any interval variable is preserved by gc, its entire network (i.e., its connected component) will be preserved as well, in a structurally equivalent form. Second, when networks are constructed, the node lists will be tied together with tail variables in typical car/cdr form. After garbage collection, however, the tail unwinding in gc will have restructured these lists into their cdr-coded forms. This results in some memory savings and also speeds up the interval processing. (Up to about 10% has been measured.)
+
+ <#TableOfContents>
+
+####	Iteration
+
+The iteration algorithm is fundamentally simple: while the scheduling list is not empty, do the first operation on it and if it was successful, remove it and update the state (the interval bounds) and append any affected nodes to the list. If an operation fails, discontinue iteration and return failure to Prolog. This is using simple FIFO scheduling as well, which is simple to implement, fair, and seems to work better than any simple alternative studied. There are several points about the (easily overlooked) details that represent significant optimizations, however.
+
+The scheduling list could be maintained as a separate data structure, but it saves space and time if nodes can be linked directly. More importantly, with direct linking, it is easy to tell if a node is already linked on the scheduling queue, and thus does not need to be linked again. (In fact it can't be linked more than once.) The question then is where to put the link pointer, given that the structure is already defined. One choice would be to put a dummy constant into the node structure which could be overwritten by a pointer *temporarily* during iteration. By making all nodes of the same arity, however, we can treat the node header as the overlayable constant. It is of course essential that the headers be restored before returning control to normal Prolog execution, and of course not to do garbage collection during iteration.
+
+The second point concerns the trailing of bound updates. Bounds are always Prolog floats, that is, structure pointers pointing to a header followed by a 64 bit double precision float on the heap. On the first update of a bound after a choicepoint creation, the structure pointer address is earlier than than the critical heap address (bh), so one creates a new float + header on the heap to take the new value and replaces the structure pointer, while trailing its address and the old structure pointer. A subsequent update of the bound (with no intervening choicepoint) will find the structure pointer address to be later than the critical heap address, so the value of the float can be overwritten on the heap, and no trail entry is needed. With this policy, after each choicepoint the changed portions of the network (just the bounds) are in effect copied incrementally into the heap tip when first encountered, but a long running iteration will be working "in place."
+
+When a node operation completes successfully, if it updates any bound of an incident variable, then we need to schedule all the nodes depending on that variable, except for the original node itself. The easiest way to do this is to keep a node on the scheduling queue while it is being executed, so it will be automatically skipped during an append. There is an exception to this in the case of nodes with integer arguments: these may be changed by rounding during the update process, and if so, the original node may need to be re-executed.
+
+Some node operations, such inequality, can enter a persistently true state, i.e., such that they will always be true under any narrowing of their arguments. Such nodes need not be executed again in a forward execution. This is done by overwriting the node operation with a "no-op" code (and trailing the old value of course). The code which appends the node list to the scheduling queue skips such nodes when they are encountered. Failure will restore the original node operation.
+
+Finally, there is a problem with very long running iterations, or "black holes" for short. These can occur in all sorts of situations in which bounds are changing but only very slowly; the run time to completion is essentially unbounded in such cases. (Fortunately, such cases are relatively rare.) To avoid these cases we use a limited resource based heuristic or "budgeting" technique. The idea is that there is a pool of N tokens available initially at each call to iterate, and every first update of a bound creates M new tokens, and every subsequent (non-trailed) update after the first uses up one token. When tokens run out, the iteration is interrupted and success is reported to Prolog, even though a fixed point has not been reached. The next time iterate is called on the same network, either the new constraints being added will cause the black hole to disappear (hopefully), or else we get to continue the interrupted (slightly modified) iteration until the tokens run out again. The idea of having first updates create new tokens, is that first updates indicate that we are moving into new territory (and hence there is a real possibility of detecting failure). As the territory we have visited gets larger, we need more tokens to do one full iteration of the largest cycle, so the ratio of tokens created on first update/tokens used on subsequent updates is roughly an upper bound on the number of iterations of a maximal feedback loop. A tight, localized loop, of course, can get many more iterations from the same supply of tokens. The initial token pool, is really just an "extra" supply to permit more iterations on small loops and small problems. These parameters are modifiable through the `interval_control` predicate.
+
+ <#TableOfContents>
+
+####	Interval Primitives
+
+Primitives were originally added to the Version 3 system by hand coding them in Pascal one at a time. This taught us both how difficult it was to get them right, and also how much more difficult it was to diagnose a problem when they were not right! The principle difficulty stems from the number of cases ( eg. about 200 major cases for multiplication), accurately keeping track of which bounds need to to be updated, correctly handling the case of equal bounds, and keeping code size down and performance up. In addition, the lack of standard interfaces to the extended IEEE 784 spec was seen as a major possible problem for porting. To deal with these issues, Version 4 was based on a complete separation of the system dependent part (the scheduling control, data structure access and updating) from the logic of the primitives. The latter were then specified in a very specialized language suited just for this purpose, and translated into the target language (C or Assembler) by a Prolog program.
+
+This interval primitive language has only a limited set of variables: (Xlb,Xub, Ylb,Yub, Zlb,Zub, Ulb,Uub, Vlb,Vub.) representing five intervals. Those labeled X, Y, and Z represent the arguments of the relation, while U and V are for intermediate results. (Assignments to X, Y, and Z bounds are automatically recorded in a set of update bits which do not appear in the language explicitly.) There is also a restriction that Y and V should not be used in the same primitive; they are essentially different names for the same variable depending on whether it is regarded as an argument or intermediate. A limited set of constants (0, 1, powers of 2, pi) are available in the language.
+
+The language control constructs are:
+ `    goto Label`
+ `    succeed           % exit true`
+ `    fail              % exit false`
+ `    A?B -> [LT,EQ,GT] % three way branch`
+ 
+Capitalized labels are local to the primitive. The use of the three-way branch (shades of FORTRAN!) permits efficient handling of the equality case while forcing one to code it explicitly. (Typically it is crucial that the equality case not generate an assignment, or the iteration will not terminate.) In addition, there is assignment ( <-) and the basic set of floating point functions (+, *, etc.). Rounding direction control is done by enclosing an arithmetic operation inside `lb(...)` or `ub(...)`, with normal rounding otherwise. (Explicit single precision versions `splb(...)` and `spub(...)` are also supported.) There is also a `flip(V)` symmetry operation which negates an interval (that is, [lb,ub]<- [-ub,-lb]), which is used to map operations into the positive half of the real line whenever it is useful to do so. (Flipping is recorded in another hidden boolean.)
+
+As an example, here is the specification for the simple equality primitive corresponding to "Z==X":
+
+eg
+	equal(zl, zh, xl, xh) :-
+		(xl?zl -> [Chkxl, Ub, Chkzl]),
+			Chkxl: xl <- zl, goto Ub,
+			Chkzl: zl <- xl, goto Ub,
+		Ub: (xh?zh -> [Chkzh, Exit, Chkxh]),
+			Chkzh: zh<- xh, goto Exit,
+			Chkxh: xh <- zh, goto Exit,
+		Exit: success.
+
+This is the 68000 Assembler code produced from it:
+
+eg
+	equal
+		fcmp.x fpO, fp2
+		fbgt @_Chkzl
+		fbeq @_Ub
+	@_Chkxl
+		fmove.x fpO, fp2
+		bset.l #xbitl, dO
+		bset.l #xbit, dO
+		bra @_Ub
+	@_Chkzl
+		fmove.x fp2, fpO
+		bset.l #zbitl, dO
+		bset.l #zbit, dO
+	@Ub
+		fcmp.x fp1, fp3
+		fbgt @_Chkxh
+		fbeq @_Exit
+	@_Chkzh
+		fmove.x fp3, fp1
+		bset.l #zbith, dO
+		bset.l #zbit, dO
+		bra @_Exit
+	@_Chkxh
+		fmove.x fp1, fp3
+		bset.l #xbith, dO
+		bset.l #xbit, dO
+	@_Exit
+		bra update   ;
+
+When a node operation is to be performed, the first step is to access each of its arguments, Z,X,Y. If an argument is a numeric term, it is floated if necessary and put into both the lower and upper bounds. If it is a variable, it must be constrained, and either its unique frozen goal or its first frozen goal if more than one is accessed: if it is a boolean domain, the bounds are loaded as [0.0, 1.0], else the bounds are loaded from the domain. For each argument the status bits which track updating and flipping are zeroed. Primitives are written assuming that initial inputs are valid intervals (LB=<UB ); although this condition is not normally checked, it can be easily done here and was used to discover hardware problems with certain fpu chips.
+
+The second character (after '$') of the operation name is used to case to the operation code. After the primitive code is done executing, the status is checked for the failure and error cases. In these cases, any remaining scheduling list is processed to restore the node headers before returning to Prolog. For successful cases, for any arguments that have changed it is necessary to update the bounds. Before doing so, the bounds are checked (must have LB=<UB ) and, if improper, a failure is triggered. (This factors such checking out of the primitive code.) If the new bounds are equal, the *variable* is instantiated *instead* of updating its bounds, and if there are any *other* (noninterval) frozen goals, they are appended to the wakened goals list. (Boolean variables- which have no bounds- are of course always instantiated if changed.)
+
+If bounds need updating, and the domain type is integer, the new bounds are first rounded inward to next integer before these comparisons are made. If these roundings cause changes, then the current node is also rescheduled, since it may need to reprocess the changes. Note that in all these comparisons, the setting of the "flipped" bit must be taken into account, since it swaps the meanings of the lower/upper changed status bits and requires that a negation be done before updating the bounds in memory.
+
+Finally, if the bounds of a variable have been changed or the variable has been instantiated, the list of nodes referencing the variable needs to be appended to the scheduling queue. (As explained earlier, nodes already scheduled and those marked as no-ops need not be scheduled.)
+
+Pure boolean operations (those with all boolean arguments) are handled slightly differently. They are distinguished by having names starting with '$$' and use a separate case table based on the third character of the name. Their access routines encode the values [0,1,_] into two status bits, which index a byte table determined by the name. The output byte is processed in a similar manner, with a bit indicating a change in a variable and a bit indicating whether to instantiate it to 0 or 1. These tables were constructed offline by a Prolog program directly from standard definitions for boolean operations.
+
+####	Pseudo-code for interval primitives
+
+eg
+	/* names of operations -actual names have '$' prepended */
+
+	interval operation(add).
+	interval=operation(begin_tog) .
+	interval operation(cos).                % for X in [-pi,pi]
+	interval-operation(equal).
+	interval-operation(finish_tog).
+	interval-operation(greatereq).
+	interval-operation(higher).             % > (not sound)
+	interval-operation(inf).                % min
+	interval=operation(j_less).             % ternary >=
+	interval operation(k_equal).            % ternary ==
+	interval-operation(lub).                % max
+	interval-operation(mul).
+	interval-operation(narrower).           % sub interval
+	interval-operation(or).                 % alias choose
+	interval-operation(pow_odd).            % odd positive powers
+	interval-operation(qpow even).          % even pos powers
+	interval-operation(rootsquare).
+	interval-operation(sin).                % for X in [-pi,pi]
+	interval-operation(tan).                % for X in [-pi/2,pi/2]
+	interval-operation(unequal).
+	interval-operation(vabs).               % abs
+	interval-operation(wrap).               % folds real line into [-Y,Y]
+	interval=operation(xp).                 % exp/ln
+
+	wrap ( zl, zh, xl, xh, yl, yh) :-
+		% Z:=wrap(X,C) C(=yh) numeric, C>O, folds X into interval [-C,C]
+		% This is used to generate periodic functions
+		% Note: assume yl=yh > 0
+		ul <- 2**1, ul<- ul*yh,             % compute ul=2C
+		vl <- lb( xl/ul), vl <- round(vl),  %check to see if in same fold
+		vh <- lb( xh/ul), vh <- round(vh),
+			% use same rounding at both ends so points always answer Yes
+		(vl?vh ->[ Dif, Same, Error]),
+		  Dif: ul <-- (yh), % just update Z if needed
+			(zl?ul -> [Uzl2,Dif2,Dif2]),
+			  Uzl2: zl <- ul,
+			Dif2: (zh?uh ->[Exit,Exit,Uzh2]),
+				Uzh2: zh<- uh, goto Exit,
+		  Same: ul <- ul*vl,  % ul is now center of the X-fold
+			vh <- ub( xh- ul),
+			vl <- lb( xl- ul),
+			(zh?vh -> [ MUxh, Same2, Uzh]),
+			  MUxh: vh<- ub( zh + ul),
+				(xh?vh -> [Same2,Same2,Uxh]),
+				  Uxh: xh<- vh, goto Same2,
+			  Uzh: zh <- vh,
+		  Same2: (zl ?vl -> [ Uzl, Exit, MUxl]),
+			  MUxl: vl <- lb( zl + ul),
+				(xl?vl -> [Uxl,Exit, Exit]),
+				  Uxl: xl<- vl, goto Exit,
+			  Uzl: zl <- vl, goto Exit,
+		  Exit: success.
+
+	unequal( zl, zh, xl, xh) :-  % z <>X, (only effective on discretes)
+		zh?xl->[ Done, Eql, B],
+		  Eql: (zl?zh -> [Eq12, XR, Fail]),
+			  XR: xl <- next(xl), goto Done,
+		  Eq12: (xl?xh ->[ Exit,ZL, Fail]),
+			  ZL: zh<- prev( zh), goto Done,
+		B: (xh?zl ->[Done, Eq2, Exit]),
+		  Eq2: ( zl?zh ->[ Eq22, XL, Fail]),
+			  XL: xh<- prev(xh), goto Done,
+		  Eq22: (xl ?xh -> [ Exit, ZR, Fail]),
+			  ZR: zl <- next(zl), goto Done,
+		Fail: fail, goto Exit,
+		Done: persistent, goto Exit,
+		Exit: success.
+
+	equal( zl, zh, xl,xh) :-
+		(xl?zl -> [Chkxl, Ub, Chkzl]),
+		  Chkxl: xl<-zl, goto Ub,
+		  Chkzl: zl <- xl, goto Ub,
+		Ub: (xh?zh -> [Chkzh, Exit, Chkxh]),
+		  Chkzh: zh<- xh, goto Exit,
+		  Chkxh: xh<-zh, goto Exit,
+		Exit: success.
+
+	% the next 4 operations are partial operations of equality
+
+	greatereq( zl,zh, xl, xh) :-  % Z >=X
+		(xh?zl) ->[Done,Lb,Lb],
+		Lb: (xl?zl -> [Ub, Ub, Chkzl]),
+		  Chkzl: zl <- xl, goto Ub,
+		Ub: (xh?zh -> [Exit, Exit, Chkxh]),
+		  Chkxh: xh<-zh, goto Exit,
+		  Done: persistent, goto Exit,
+		Exit: success.
+
+	begin_tog( zl, zh, xl, xh ) :-
+		(xl?zl -> [Chkxl, Exit, Chkzl]),
+		  Chkxl: xl <- zl, goto Exit,
+		  Chkzl: zl <- xl, goto Exit,
+		Exit: success.
+
+	finish tog( zl, zh, xl, xh) :-
+		(xh?zh -> [Chkzh, Exit, Chkxh]),
+		  Chkzh: zh<- xh, goto Exit,
+		  Chkxh: xh<-zh, goto Exit,
+		Exit: success.
+
+	narrower(zl, zh, xl,xh) :-  % X<= Z
+		(xl?zl -> [Chkxl, Ub, Ub]),
+		  Chkxl: xl<-zl, goto Ub,
+		Ub: (xh?zh -> [Exit, Exit, Chkxh]),
+		  Chkxh: xh<-zh, goto Exit,
+		Exit: success.
+
+	higher( zl,zh, xl, xh) :-  % Z <X, (may be unsound on general intervals)
+		(zh?xl) ->[Done,Lb,Lb],
+		Lb:(zl?xl -> [Ub, Chkxl, Chkxl]),
+		  Chkxl: xl <- next(zl), goto Ub,
+		Ub: (zh?xh ->[Exit, Chkzh, Chkzh]),
+		  Chkzh: zh<-prev(xh), goto Exit,
+		  Done: persistent, goto Exit,
+		Exit: success.
+
+	j_less( zl, zh, xl,xh, yl,yh) :-  % Y is assumed to be boolean!
+		% if Y =1 then Z>=X else if Y=O then Z<X
+		% else if Z<X persistently then Y<- 0
+		yl?O -> [iaerror, Mfalse, greatereq],
+		Mfalse: (yh?O -> [iaerror, higher, Test]),
+		Test: (xh?zl ->[True, True, Test2]),
+		Test2: (zh?xl -> [False, Exit, Exit]),
+		True: yl <- 2**0, goto Exit,
+		False: yh<- 0, goto Exit,
+		Exit: success.
+
+	k_equal( zl,zh,xl,xh,yl,yh) :-  % Y is assumed to be boolean!
+		% if Y=l then Z==X else if Y=O then Z<>X else
+		% if z disjoint from X then Y<-0 else if z a point and X a
+		% point and X=Z then Y<-1
+		yl?O ->[ iaerror, Mfalse, equal],
+		Mfalse: (yh?O ->[ iaerror, unequal, Test]),
+		Test: ( zl ?xh -> [Test2, Tryeq, Un] ) ,
+		Test2: (xl?zh ->[Exit, Exit, Un]),
+		Un: yh<- 0, goto Exit,
+		Tryeq: (zl?zh ->[Exit,Tryeq2,Exit]),
+		Tryeq2: (xl?xh ->[Exit, Eq, Exit]),
+		Eq: yl<- 2**0, goto Exit,
+		Exit: success.
+
+	inf( zl, zh, xl,xh,yl,yh) :-  % Z == min(X,Y)
+		(zl?xl -> [Ubzx, Ubzx, Chkxl]),  % Z =< X
+			  Chkxl: xl <- zl, goto Ubzx,
+		Ubzx: (zh?xh -> [LtY,LtY, Chkxh)),
+			  Chkxh: zh<-xh, goto LtY,
+		LtY: ( zl ?yl -> [Ubzy, Ubzy, Chkyl]),  % Z =< Y
+			  Chkyl: yl <- zl, goto Ubzy,
+		Ubzy: (zh?yh -> [Ubx,Ubx, Chkyh]),
+			  Chkyh: zh<-yh, goto Ubx,
+		Ubx: (zh?yl -> [Uxhl, Uby,Uby]),
+			  Uxhl: (zh?xh ->[ Uxh,LbZ,LbZ]),
+				  Uxh: xh<- zh, goto LbZ,
+		Uby: (zh?xl -> [Uyhl, LbZ,LbZ)),
+			  Uyhl: (zh?yh ->[ Uyh,LbZ,LbZ]),
+				  Uyh: yh<- zh, goto LbZ,
+		LbZ: (xl ?yl -> [Usex, Usex, Usey) ),  % Z >= min(xl,yl)
+			  Usex: vl <- xl, goto Chkzl,
+		 	  Usey: vl <- yl, goto Chkzl,
+		Chkzl: (vl ?zl -> [Exit, Exit, Chkzh]),
+			  Chkzh: zl<- vl, goto Exit,
+		Exit: success.
+
+	lub(zl, zh, xl,xh,yl,yh) :- % Z == max(X,Y)
+		(xl?zl -> [Ubx, Ubx, Chkxl]),  % X=< Z
+			  Chkxl: zl <- xl, goto Ubx,
+		Ubx: (xh?zh -> [LtY,LtY, Chkxh]),
+			  Chkxh: xh<-zh, goto LtY,
+		LtY: (yl?zl -> [Uby, Uby, Chkyl]), % Y =< Z
+			  Chkyl: zl <- yl, goto Uby,
+		Uby: (yh?zh -> [Lbx,Lbx, Chkyh]),
+			  Chkyh: yh<-zh, goto Lbx,
+		Lbx: (zl?xh -> [Lby,Lby, Uyll ] ) ,
+			  Uyll: (zl?yl -> [UbZ,UbZ, Uyl]),
+				  Uyl: yl<-zl, goto UbZ,
+		Lby: (zl?yh -> [UbZ,UbZ, Uxll)),
+			  Uxll: (zl?xl -> [UbZ,UbZ,Uxl)),
+				  Uxl: xl<- zl, goto UbZ,
+		UbZ: (yh?xh -> [Usex,Usex,Usey]), % Z =< max(xh,yh)
+			  Usex: vh <- xh, goto Chkzh,
+			  Usey: vh <- yh, goto Chkzh,
+		Chkzh: (vh?zh -> [Chkzl, Exit, Exit]),
+			  Chkzl: zh<- vh, goto Exit,
+		Exit: success.
+
+	% deterministic aprox to (Z==X or Z==Y)
+
+	or( zl,zh, xl,xh, yl,yh) :-
+		xl?yl -> [XY,XY, YX],
+		XY: (zl?xl -> [ Uzlxl, DX3, DisjX]),
+			  Uzlxl: zl<- xl, goto DX3,
+		DisjX: (xh?zl -> [EqZY, DX2,DX2]),
+			  DX2: ( yh?zl -> [EqZX, DX3,DX3]),
+			  DX3: ( zh?yl -> [EqZX, PartB,PartB]),
+		YX: (zl?yl -> [ Uzlyl, DY3, DisjY]),
+			  Uzlyl: zl<- yl, goto DY3,
+		DisjY: (yh?zl -> [EqZX, DY2,DY2]),
+			  DY2: ( xh?zl -> [EqZY, DY3,DY3]),
+			  DY3: ( zh?xl -> [EqZY, PartB,PartB]),
+		EqZY: (zl?yl ->[Uzyl,HYZ,Uyzl]),
+			  Uzyl: zl<-yl, goto HYZ,
+			  Uyzl: yl<-zl, goto HYZ,
+			  HYZ: ( zh?yh -> [Uyzh, Exit, Uzyh]),
+		EqZX: (zl?xl ->[Uzxl,HXZ,Uxzl]),
+			  Uzxl: zl<-xl, goto axz,
+			  Uxzl: xl<-zl, goto HXZ,
+			  HXZ: ( zh?xh -> [Uxzh, Exit, Uzxh]),
+		PartB: (xh?yh -> [UBY,UBX, UBX]),
+		UBY: (zh?yh -> [Exit,Exit,Uzyh]),
+		Uzyh: zh<- yh, goto Exit,
+		UBX: (zh?xh -> [Exit,Exit,Uzxh]),
+		Uzxh: zh<- xh, goto Exit,
+		Uyzh: yh<- zh, goto Exit,
+		Uxzh: xh<- zh, goto Exit,
+		Exit: success,
+		Fail: fail.
+
+	add( zl, zh, xl, xh, yl, yh) :-  % Z ==X+ Y
+		vl <- lb( xl + yl),
+		vl?zl -> [BackLX, Upper, MUZL],
+			BackLX: vl <- lb( zl- yh),
+				vl?xl -> [BackLY,BackLY, MUXL],
+				MUXL: xl <- vl, goto BackLY,
+			BackLY: vl <- lb( zl- xh),
+				vl?yl -> [Upper, Upper, MUYL],
+				MUYL: yl <- vl, goto Upper,
+		  MUZL: zl<- vl, goto Upper,
+		Upper: vh <- ub( xh + yh),
+		vh?zh -> [ MUZH, Exit, BackHX],
+		BackHX: vh <- ub( zh- yl),
+		vh?xh -> [MUXH, BackHY,BackHY],
+		MUXH : xh<- vh, goto BackHY,
+		BackHY: vh <- ub( zh- xl),
+		vh?yh -> [ MUYH,Exit,Exit],
+		MUYH: yh<- vh, goto Exit,
+		MUZH: zh <- vh, goto Exit,
+		Exit: success.
+
+	mul( zl, zh, xl, xh, yl, yh) :- % Z == X*Y
+		xl?O -> [Chkxh, XMpos, Xpos],
+				Chkxh: (xh?O ->[ Swx, Swx, Xindef]),
+					Swx: flip(x), goto Xneg,
+		Xneg: (yl ?0 -> [ Chkyhl, ZMneg, Zneg]),
+				Chkyhl: (yh?O -> [Swyl,Swyl, Yindefl]),
+					Swyl: flip(y), goto Zpos,
+				Yindefl: (zl?O -> [ Chkzhl, MakeYneg,MakeYneg] ),
+			                      % X=<O,Z>=O => Y=<O
+					Chkzhl: (zh?O -> [Swzl, Swzl, FZ ] ) ,
+						Swzl: flip(z),goto MakeYpos,% X=<O,Z=<O => Y>=O
+							FZ: flip(z), goto MpyBX,
+			                      % since x was flipped
+			  ZMneg: (yh?O ->[Fail, ZZero, Zneg]),
+		Xindef: (yl?O -> [Chkyh2, YMpos,Ypos]),
+			  Chkyh2: (yh?O -> [Yneg,Yneg, MpyC]),
+			  Yneg: flip(y),
+				(zl?O -> [Chzh2, MakeXneg,MakeXneg]),
+				  Chzh2: (zh?O-> [Swz2, Swz2, FZ2]),
+					  Swz2:flip(z), goto MakeXpos,
+						  FZ2: flip(z), goto MpyBY
+			  YMpos: (yh?O -> [Fail, zzero, Ypos]),
+			  Ypos: (zl?O -> [Chzh3, MakeXpos,MakeXpos]),
+				  Chzh3: (zh?O->[Swz3,Swz3, MpyBY]),
+					  Swz3: flip(z), goto MakeXneg,
+		XMpos: (xh?O -> [Fail, ZZero, Xpos]),
+		Xpos: (yl?O -> [ Chkyh,ZMpos,Zpos]),
+			  Chkyh: (yh?O ->[ Swy, Swy, Yindef]),
+				  Swy: flip(y), goto Zneg,
+				  Yindef: (zl?O -> [ Chkzh, MakeYpos,MakeYpos]),
+			                          % X>=O,Z>=O => Y>=O
+					  Chkzh: (zh?O -> [Swz4, Swz4, MpyBX ] ) ,
+						  Swz4: flip(z),goto MakeYneg,% X>=O,Z=<O => Y=<O
+			  ZMpos: (yh?O -> [Fail, ZZero, Zpos]),
+			
+		MpyC: vh<- lb(xl*yh),      % X,Y,Z all sign indefinite
+			vl<- lb(xh*yl),        % vh=<O, vl=<O
+			vh?vl -> [ Usevh,Usevh,Usevl],
+			  Usevl: vh<-vl, goto Usevh,
+			Usevh: (vh?zl-> [MpyCH,MpyCH, Uzlvh]),
+			  Uzlvh: zl<-vh, goto MpyCH,
+			MpyCH: vl<-ub(xl*yl),  % X,Y,Z all sign indefinite
+					vh<- ub (xh*yh) ,
+				vl?vh -> [ Usevh2,Usevl2,Usevl2],
+				  Usevh2: vl<-vh, goto Usevl2,
+				Usevl2: (vl?zh-> [Uzhvl,Exit, Exit]),
+				  Uzhvl: zh<-vl, goto Exit,
+				  
+		MpyBX: vl <- lb(xh*yl),    % X definite sign, Y& Z indefinite
+			vl?zl -> [ Backxzl,MpyBHX,Uzll],
+			  Uzll: zl<-vl, goto MpyBHX,
+			  Backxzl: (xl?O -> [MpyBHX,MpyBHX,BXDivl]),
+				  BXDivl: vl <- lb(zl/xl),
+					vl?yl-> [ MpyBHX,MpyBHX, Uyll],
+					Uyll: yl<- vl, goto MpyBHX,
+		MpyBHX: vh<- ub( xh*yh),
+			vh?zh -> [ MUZH, Exit, Backxzh],
+			Backxzh: (xl?O -> [Exit,Exit,BXDivh]),
+				  BXDivh: vh<- ub(zhlxl),
+					vh?yh -> [ MUYH, Exit,Exit],
+					
+		MpyBY: vl <- lb(yh*xl),    % Y definite sign, X& Z indefinite
+			vl?zl -> [ Backyzl,MpyBHY,Uzl2],
+				  Uzl2: zl<-vl, goto MpyBHY,
+			  Backyzl: (yl?O -> [MpyBHY,MpyBHY,BYDivl]),
+				BYDivl: vl <- lb(zllyl),
+					vl?xl-> [ MpyBHY,MpyBHY, Uyl2],
+					Uyl2: xl<- vl, goto MpyBHY,
+			MpyBHY: vh<- ub( xh*yh),
+				vh?zh -> [ MUZH, Exit, Backyzh],
+			  Backyzh: (yl ?0 -> [Exit, Exit, BYDivh]),
+				BYDivh: vh<- ub(zhlyl),
+					vh?xh -> [ MUXH, Exit,Exit],
+					
+		ZZero: (zl?O -> [ Zl_O, Zh, Fail]),
+				Zl 0: zl <- 0, goto Zh,
+			Zh: (zh?O -> [Fail, Exit, Zh_0]),
+				Zh_0 : zh <- 0, goto Exit,
+		
+		% all signs definite multiplication
+		
+		MakeXneg: flip(x), goto MakeXpos,
+		MakeXpos: xl<- 0, goto MpyA,
+		MakeYneg: flip(y), goto MakeYpos,
+		MakeYpos: yl<- 0, goto MpyA,
+		Zneg: (zh?O -> [Swz, Swz, Chzl]),
+			Chzl: flip(z), zl<-0, goto MpyA,
+			Swz: flip(z), goto MpyA,
+		Zpos: (zl?O -> [Chzh, MpyA, MpyA]),
+			Chzh: zl<- 0, goto MpyA,
+		
+		MpyA: vl <- lb( xl * yl),
+			vl?zl -> [BackLX, Upper, MUZL],
+			BackLX: (yh?O -> [BackLY, BackLY,DivL]),
+				DivL: vl <- lb( zl I yh),
+					vl?xl -> [BackLY,BackLY, MUXL],
+					MUXL: xl <- vl, goto BackLY,
+				BackLY: (xh?O -> [Upper,Upper,BLY]),
+					BLY: vl <- lb( zl I xh),
+					vl?yl -> [Upper, Upper, MUYL],
+					MUYL: yl <- vl, goto Upper,
+			MUZL: zl<- vl, goto Upper,
+		Upper: vh <- ub( xh * yh),
+			vh?zh -> [ MUZH, Exit, BackHX],
+			BackHX: (yl?O ->[BackHY,BackHY ,DivH]),
+				DivH: vh <- ub( zh I yl),
+					vh?xh -> [MUXH, BackHY,BackHY],
+					MUXH : xh<- vh, goto BackHY,
+				BackHY: (xl ?0 -> [Exit, Exit, BHY] ) ,
+					BHY: vh <- ub( zh I xl),
+					vh?yh -> [ MUYH,Exit,Exit],
+					MUYH: yh<- vh, goto Exit,
+			MUZH: zh <- vh, goto Exit,
+		Exit: success,
+		Fail: fail.
+
+	rootsquare( zl, zh, xl, xh) :-                   % Z==X**2
+		xl?O -> [ Chkub, Eq,Eq],
+		Chkub: (xh?O -> [Flp, Flp, SpO]),
+			SpO: ul <- ub(xl*xl),  % X spans 0
+				ul?zl -> [Zeroxl,Tryxh,Tryxh],  % is sign of x forced?
+				Tryxh: uh<- ub(xh*xh),
+					(uh?zl-> [Zeroxh,Zlb,Zlb]),
+				  Zlb: (zl?O -> [MUzl,Zub,Zub]),
+				                  %intersect Z with [0, max(ul, xh)]
+					MUzl: zl<- 0, goto Zub,
+				  Zub: (ul?uh -> [Zhxh,Zhxh, Zhul]),
+					  Zhxh: (uh?zh -> [Mzhxh,Exit,Mxh]),
+						  Mzhxh : zh <- uh, goto Exit,
+						  Mxh: uh <- ub(sqrt(zh)),
+							(uh?xh -> [Uxh,Exit,Exit]),
+							  Uxh: xh <- uh,
+								uh <- -uh,
+								(uh?xl -> [Exit,Exit, Uh]),
+							  Uh: xl <- uh, goto Exit,
+					  Zhul : (ul?zh -> [Mzhuh,Exit,Mxh2]),
+						  Mzhuh zh <- ul, goto Exit,
+						  Mxh2: uh <- ub(sqrt(zh)),
+							uh <- - uh,
+							(uh?xl -> [Exit,Exit, Uxl]),
+							  Uxl: xl<- uh,
+								uh<- -uh,
+								(uh?xh -> [Uh2,Exit, Exit]),
+							  Uh2: xh <- uh, goto Exit,
+		Flp: flip(x), goto Eq,
+		Zeroxh: flip(x), goto Zeroxl,
+		Zeroxl: xl<- 0, goto Eq,  % x can't be negative
+		Eq: ul<- lb(xl*xl),
+			uh<- ub(xh*xh),
+			(ul?zl -> [Chkxl, Ub, Chkzl]), % X*X==Z, X>=O
+			Chkxl:ul<- lb(sqrt(zl)),
+				(ul?xl -> [Ub,Ub, Upxl] ), % Jun 2
+				Upxl: xl<-ul, goto Ub,
+			Chkzl: zl ~- ul, goto Ub,
+		Ub: (uh?zh -> [Chkzh, Exit, Chkxh)),
+			Chkzh: zh<- uh, goto Exit,
+			Chkxh:uh<- ub(sqrt(zh)),
+				(uh?xh -> [ Upxh,Exit,Exit]),
+				Upxh: xh<- uh, goto Exit,
+		Exit: success.
+
+	tan( zl,zh, xl,xh) :-   % Z== tan(X) assumes -pi/2=< xl=<xh =< pi/2
+		ul <- lb(tan(xl)),  % [ul,uh]<- tan([xl,xh])
+		uh <- ub(tan(xh)),
+		(ul?zl -> [BackL,NonsingH,Uzl]),
+			  Uzl: zl<- ul, goto NonsingH,
+		  BackL: ul <- lb(atan( zl)),  % assume principal value
+			(ul?xl ->[ NonsingH, NonsingH, Uxl]),
+			Uxl: xl<- ul, goto NonsingH,
+		NonsingH: (uh?zh -> [Chkzl,Exit,BackH]),
+		  Chkzl: zh<- uh, goto Exit,
+		  BackH: uh<- ub(atan(zh)),
+			(uh?xh -> [Uxh,Exit,Exit]),
+			Uxh: xh<- uh, goto Exit,
+		Exit success.
+
+	xp( zl, zh, xl, xh ) :-  % Z == exp(X)
+		zl?O -> [Trim, Zeroch, Loglo],
+		Trim: zl <- 0, goto Zeroch,
+		Zeroch: (zh?O -> [Fail,Fail, Expl] ),
+		Loglo: ul <- lb( ln( zl) ),
+			(xl?ul -> [Uxl,Loghi,Expl]),
+			Uxl: xl <- ul, goto Loghi,
+		Expl: ul <- lb( exp( xl) ),
+			(ul?zl -> [Loghi,Loghi, Uzl]),
+			Uzl: zl<- ul, goto Loghi,
+		Loghi: uh <- ub( ln( zh) ),
+			(uh?xh -> [Uxh, Exit, Exph]),
+			Uxh: xh <- uh, goto Exit,
+		Exph: uh <- ub( exp( xh) ),
+			(uh?zh -> [Uzh,Exit,Exit]),
+			Uzh: zh<- uh, goto Exit,
+		Fail: fail,
+		Exit: success.
+
+	cos( zl, zh, xl, xh ) :- % Z == cos(X), -l=<Z=<l, -pi=< X=< pi
+		xl?O -> [Mleft, Right,Right],
+		Mleft: ( xh?O -> [Left,Left, Center]),
+		Left: flip(x), goto Right,
+		Right: uh <- ub( cos(xl)),
+			uh?zh -> [Uzh, Low, Uxl],
+			  Uzh: zh <- uh, goto Low,
+			  Uxl: vl<- lb( acos(zh)),
+				(vl?xl -> [Low,Low,Uxl2]), % Jun 2
+				Uxl2: xl<- vl, goto Low,
+			Low: ul <- lb( cos(xh)),
+				ul?zl -> [Uxh, Exit, Uzl],
+				Uzl: zl <- ul, goto Exit,
+				Uxh: vh <- ub( acos(zl)),
+					(vh?xh -> [Uxh2,Exit,Exit]),
+					Uxh2: xh<- vh, goto Exit,
+		Center: ul <- - xl,
+			xh?ul -> [Hleft,Hright, Hright],
+			Hleft: flip(x), goto Hright,
+			Hright:ul <- lb( cos(xl)), %ul >= uh, ul corresp. to xl
+				uh <- ub( cos(xh)),
+				vl<- l,
+				zh?uh -> [Fail, Meets,Meets],
+				Meets: ( zh?ul ->[ Unxl, Chklo, Chklo]),
+					Unxl: vl <- lb( acos( zh)),
+						(vl?xl -> [Chklo,Chklo,Unxl2]),
+					Unxl2: xl<- vl, goto Chklo,
+				Chklo: ( zl?uh -> [Upzl, Exit, Uxh]),
+				Upzl: zl<- uh ,goto Exit,
+		Fail: fail,
+		Exit: success.
+
+	sin( zl, zh, xl, xh ):-  % for Z == sin(X) , -1=<Z=<1, -pi=< X=< pi
+		vl <- 2**1,
+		vh <- pi,
+		vh <- vh/vl,  % pi/2
+		vl <- - vh,   % -pi/2
+		xh?vh -> [Mcenter, Mcenter, MRight],
+		Mcenter: ( xl?vl -> [MLeft, Center,Center]),
+		Center: uh <- ub( sin(xh)),  %increasing monotone
+			ul <- lb( sin(xl)),
+			zh?uh ->[ Uxh, Low, Uzh],
+			  Uxh: uh <- ub( asin(zh)),
+				(uh?xh -> [Uxh2,Low,Low]),
+				  Uxh2: xh<- uh, goto Low,
+			  Uzh: zh <- uh, goto Low,         % Jun 2
+			Low: (zl ?ul -> [ Uzl, Exit, Uxl]),
+		MLeft: flip(x), flip(z), vh<- - vl, goto MRight,
+		                            % (flip destroys vh) sin(-x)=-sin(x)
+		MRight: ( xl ?0 -> [ForceR, Pos, Pos ]) ,
+			Pos: (xl?vh -> [CR,Right,Right]),
+			ForceR: (zl?O -> [Leftbranch, CR, CR]),
+			Leftbranch: ( xl?vl -> [Exit, Low,Low] ),
+		                            % Low if zl<O, -pi=<xl<O
+		Right: ul <- ub( sin(xl)),  % decreasing monotone
+			uh <- lb( sin(xh)),
+			ul?zh ->[ Urzh, Rlow, Urxl],
+				Urzh: zh <- ul, goto Rlow,
+				Urxl: vl <- lb( acos(zh)),
+					vl <- lb( vl + vh),
+					(vl?xl ->[Rlow,Rlow, Urxl2]),
+					Urxl2: xl<- vl, goto Rlow,
+			Rlow: ( uh?zl -> [Urxh, Exit, Uzh2]),
+				Uzh2: zl<-uh, goto Exit,
+				Urxh: vl <- ub( acos(zl)),
+					vh <- ub(vl + vh),
+					(vh?xh -> [Urxh2, Exit,Exit]),
+					Urxh2: xh<- vh, goto Exit,
+		CR: ul <- lb( sin( xl)), %positive hump
+			uh <- lb( sin( xh)),
+			ul?uh -> [CRL, CRL, CRR],
+			CRL: (zh?uh ->[ Uxh, Low,Low]),
+			CRR: (zh?ul ->[Urxl, Rlow,Rlow]),
+		Uxl: vl<- lb( asin( zl)),
+			(vl?xl -> [Exit,Exit, Uxl2]),
+			Uxl2: xl<- vl, goto Exit,
+		Uzl: zl<- ul, goto Exit,
+		
+		Exit: success.
+
+	pow odd( zl, zh, xl, xh, yl) :-  % Z==X**N , N>O, N odd, N in yl
+		zl?O -> [Chkub,Right, Right],
+		Chkub: (zh?O -> [Left, Left, MayCenter]),
+		  MayCenter: (xl?O -> [Chubx, Rightx,Rightx]),
+		  Chubx: (xh?O -> [Leftx,Leftx,Center]),
+		Center: vl <- - zl,
+			vl<- ub( ln(vl)), vl<- ub( vl/yl), vl<- ub( exp(vl)),
+			vl<- - vl,
+			(vl?xl -> [CUzl, Ub, Uxl]),
+			CUzl: (xl ?0 -> [Negxl, Zxl, Uzl]),
+				Negxl: vl<- - xl,
+					vl<- ub(ln(vl)), vl<-ub(vl*yl),vl<- ub(exp(vl)),
+					vl<- - vl, goto UzlC,
+				Zxl: zl<- 0, goto Ub,
+		Leftx: flip(z),flip(x), goto Rightx,
+		Rightx: zl<-0, goto Right,
+		Left: flip(z),flip(x), goto Right,
+		  Right: (zl?O -> [Zl,Zl,NZl]),
+			Zl: vl<-0, goto Lbch,
+			NZl: vl <- lb( ln(zl)),
+				vl<- lb( vl/yl), vl<- lb( exp(vl)),
+				goto Lbch,
+		  Lbch: (vl?xl -> [Uzl, Ub, Uxl]),
+			Uxl: xl <- vl, goto Ub,
+			Uzl: vl<- lb(ln(xl)), vl<-lb(vl*yl),vl<- lb(exp(vl)),
+				goto UzlC,
+			UzlC: (vl ?zl -> [Ub, Ub, Upzl]),
+				Upzl: zl<- vl, goto Ub,
+		  Ub: (zh?O ->[Zh,Zh,NZh]),
+			Zh: vh<- 0, goto Ubch,
+			NZh:vh <- ub( ln(zh)),
+				vh<- ub( vh/yl), vh<- ub( exp(vh)),
+				goto Ubch,
+		Ubch: (vh?xh -> [Uxh, Exit, Uzh]),
+		  Uxh: xh<- vh, goto Exit,
+		  Uzh: (xh?O -> [Uzhn, Uzhz, Uzhp]),
+				Uzhn: vh<- -xh,
+					vh<- lb (ln (vh)),
+					vh<-lb(vh*yl),vh<-lb( exp(vh)),
+					vh<- -vh,
+					goto UzhC,
+				Uzhz: zh<-0, goto Exit,
+				Uzhp: vh<- ub(ln(xh)),
+					vh<-ub(vh*yl),vh<-ub( exp(vh)),
+		UzhC: (vh?zh-> [Upzh,Exit,Exit]),
+		  Upzh: zh <- vh, goto Exit,
+		Exit: success.
+
+	qpow even( zl, zh, xl, xh, yl) :- % Z==X**N , N>O, N even, N in yl
+		zl?O -> [SZ,Zero,Nonz],
+			SZ: (zh?O -> [Fail,SZl,SZl]),
+				SZl: zl<- 0, goto Zero,
+		Zero: vl<- 0,
+			zh?O -> [Zvh,Zvh,Dovh],
+				Zvh: vh<-0, goto ZChkXl,
+				ZChkXl: (xl?O -> [ Zxl,ZChkXh,Fail]),
+					Zxl: xl<-0, goto ZChkXh,
+				ZChkXh: (xh?O -> [Fail, Exit, Zxh]),
+					Zxh: xh<-0, goto Exit,
+		Nonz: vl <- lb( ln(zl)),
+			vl<-lb( vl/yl), vl<-lb( exp(vl)),
+			Dovh: vh <- ub( ln(zh)),
+				vh<-ub( vh/yl), vh<- ub(exp(vh)),
+			ChkX: ( xl ?0 -> [ Chkub, Eq, Eq]),
+			Chkub: (xh?O -> [Flp,Flp, SpO]),
+				SpO: uh<- -xl,
+					(uh?vl -> [Eq, Mayleft,Mayleft]),
+					Mayleft: (xh?vl -> [Flp, Both, Both]),
+					Both: (uh?xh -> [ Righthi, Righthi, Lefthi]),
+						Righthi: uh<-xh, goto Lefthi,
+						Lefthi: (uh?vh -> [Trimvh,Exit, Trimxl)),
+							Trimvh: vh<- uh, goto Uzhvh,
+						Trimxl: uh<- -xl,
+							(uh?vh -> [Trimxh,Trimxh, Trim_low)),
+							Trim_low: xl<- -vh, goto Trimxh,
+						Trimxh: (xh?vh -> [Exit,Exit, Uxh]),
+		
+		Flp: uh<-vh, flip(x), vh<-uh, goto Eq,
+			          % Note:flip ( may) use vh
+		Eq: (vl ?xl -> [Uzl, Ub, Uxl]),
+			Uxl: xl <- vl, goto Ub,
+			Uzl: vl<- lb(ln(xl)), vl<-lb(vl*yl),vl<- lb(exp(vl)),
+				(vl?zl ->[Ub,Ub,Upzl]),
+			Upzl: zl <- vl, goto Ub,
+		Ub: (vh?xh -> [Uxh, Exit, Uzh]),
+			Uxh: xh<- vh, goto Exit,
+			Uzh: vh<- xh, goto Uzhvh,
+			Uzhvh:vh<- ub(ln(vh)), vh<-ub(vh*yl),vh<-ub( exp(vh)),
+				(vh?zh -> [Upzh,Exit,Exit]),
+				Upzh: zh<- vh, goto Exit,
+		Fail: fail,
+		Exit: success.
+
+	vabs( zl, zh, xl, xh) :-                    % Z== |X|
+		xl?O -> [ Chkub, Eq,Eq],
+		Chkub: (xh?O -> [Flp,Flp, SpO]),
+			SpO: ul <- -(xl), %X spans 0
+				ul?zl -> [Zeroxl,Tryxh,Tryxh],  % is sign of x forced?
+				Tryxh: (xh?zl-> [Zeroxh,Zlb,Zlb]),
+					Zlb: (zl?O -> [MUzl,Zub,Zub]),
+				                 %intersect z with [0, max(ul, xh)]
+						MUzl: zl<- 0, goto Zub,
+					Zub: (ul?xh -> [Zhxh,Zhxh, Zhul]),
+						Zhxh : (xh?zh -> [Mzhxh,Exit,Mxh]),
+							Mzhxh : zh <- xh, goto Exit,
+						Zhul: (ul?zh -> [Mzhuh,Exit,Muh]),
+							Mzhuh : zh <- ul, goto Exit,
+				Muh: xl <- - zh,
+					(xh?zh -> [Exit,Exit,Chkxh]),
+			Mxh: xh <- zh,
+				(ul?zh -> [Exit,Exit, Ul]) I
+				Ul: xl <- - zh, goto Exit,
+		Zeroxl: xl<- 0, goto Eq,       % x can't be negative
+		Zeroxh: xh<- 0, goto Flp,      % x can't be positive
+		Flp: flip(x), goto Eq,
+		Eq: (xl?zl -> [Chkxl, Ub, Chkzl]),  % X==Z
+			Chkxl: xl<- zl, goto Ub,
+			Chkzl: zl <- xl, goto Ub,
+		Ub: (xh?zh -> [Chkzh, Exit, Chkxh]),
+			Chkzh: zh<- xh, goto Exit,
+			Chkxh: xh<- zh, goto Exit,
+		Exit: success.
+
+ <#TableOfContents>

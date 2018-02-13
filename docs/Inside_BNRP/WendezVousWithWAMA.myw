@@ -1,0 +1,53 @@
+[MyWordDocStyle]
+title	Inside BNR Prolog
+centreblock
+	or,
+	
+	**Wendezvous with WAMA**
+	
+	William J. Older
+	Computing Research Laboratory
+	
+	September 1994
+
+
+.TOC	{#id TableOfContents}`        `**Table of Contents**
+	
+
+##	Introduction
+
+The purpose of this document is to describe the core of BNR Prolog -- its memory organization, data structures, opcode semantics, and compilation strategy -- in sufficient detail that it could be used as a maintenance and development guide, or as a specification for a reimplementation or port, or just as "educational" reading.
+
+The difficulty in this enterprise is first to find the right level of description, so nothing important is omitted (including the reasons for various things), without cluttering the description with too 'many details which are too tied to a specific implementation. The second problem is then to find a way of organizing such a description so that it can be read at all. Everything really does depend on. everything else, as they say in "new wave" circles, and no one pass linearization is completely adequate. I have tried to address this by first sketching the conceptual and historical background in broad terms, then focusing in on WAM technology and its adaptation to BNR Prolog in terms of design issues, before getting to a detailed description.
+
+Every effort has been made to make this description complete (but it necessarily fades off into its context) and accurate (but necessarily more abstract than a real implementation) and self-consistent (so far as we can manage that by manual means). Someday perhaps it may be used to construct a new implementation from scratch, and then we will know just *how* complete, accurate, and self-consistent it is.
+
+ <#TableOfContents>
+
+@include
+	WendezVousWithWAMA_I.myw
+	WendezVousWithWAMA_II.myw
+	WendezVousWithWAMA_III.myw
+
+&
+	@import 
+		/BNRProlog-Papers/myword/pkgs/demo.mmk
+		/BNRProlog-Papers/myword/pkgs/tsv.mmk
+		/BNRProlog-Papers/myword/pkgs/toc.mmk
+		../MyWordDocStyle.mmk
+	.TOC .. <- toc 2 4
+	title ..      <- <h1 class=_centre>
+	centreblock .. <- <div class=_centre>
+	@css
+		._centre {text-align: center;}
+		
+	`| .. |` <- <span class=form>
+	^ .. ^ <- <sup>
+	/\     <- &and;
+	\/     <- &or;
+	!E     <- &exist;
+	==>    <- &Implies;
+	->     <- &xrarr;
+	'''    <- &nbsp;
+	@css
+		span.form {font-family:monospace; white-space:pre;}
