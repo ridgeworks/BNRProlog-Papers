@@ -4,12 +4,31 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 
 #### Papers
 1..
-	[Inside BNR Prolog], W. J. Older, CRL Internal, 1994
+	- [Inside BNR Prolog], W. J. Older, CRL Internal, 1994
 	
-	[Constraint Arithmetic on Real Intervals], William Older & Andre Vellino, Constraint logic programming : selected research, ed. Frédéric Benhamou & A Colmerauer, MIT Press 1993 
+	- [Constraint Arithmetic on Real Intervals], William Older & André Vellino, Constraint logic programming : selected research, ed. Frédéric Benhamou & A Colmerauer, MIT Press 1993 
 	
+	- [Extending Prolog with Constraint Arithmetic on Real Intervals], William Older & André Vellino, Proceedings of the Canadian Conference on Electrical and Computer Engineering, 1990
+	
+	- [Applying Interval Arithmetic to Real, Integer and Boolean Constraints], Frédéric Benhamou & William J. Older, The Journal of Logic Programming, Vol. 32, Iss. 1, July 1997
+	
+	- [Constraint Logic Programming on Boolean, Integer and Real Intervals], Frédéric Benhamou, William J. Older & André Vellino, CRL Internal, 1994 
+	
+	- [Programming in CLP(BNR)], Frédéric Benhamou & William J. Older, CRL Internal, ?? 
+	
+	- [Computing Time Intervals Logically], André Vellino & William J. Older, presented at Society for Exact Philosophy meeting in 1993
+	
+	- [Programming in Logic], André Vellino,  CRL Internal, 1990
+	
+	- [Costas Arrays], André Vellino,  CRL Internal, 1990
+---
 &
-	[XInside BNR Prolog] <- link https://ridgeworks.github.io/BNRProlog-Papers/docs/Inside_BNRP/WendezVousWithWAMA.html
 	[Inside BNR Prolog] <- link docs/Inside_BNRP/WendezVousWithWAMA.html
 	[Constraint Arithmetic on Real Intervals] <- link docs/ConstraintAritmetic.pdf 
-	[X_Constraint Arithmetic on Real Intervals] <- link https://ridgeworks.github.io/BNRProlog-Papers/docs/ConstraintAritmetic.pdf 
+	[Extending Prolog with Constraint Arithmetic on Real Intervals] <- link docs/ExtendingProlog.pdf
+	[Applying Interval Arithmetic to Real, Integer and Boolean Constraints] <- link docs/ApplyingInterval.pdf
+	[Constraint Logic Programming on Boolean, Integer and Real Intervals] <- link docs/CLPonBNR.pdf
+	[Programming in CLP(BNR)] <- link docs/ProgrammingInCLP.pdf
+	[Computing Time Intervals Logically] <- link docs/ComputingTime.pdf
+	[Programming in Logic] <- link docs/PIC-Prolog.pdf
+	[Costas Arrays] <- link docs/CostasArrays.pdf
