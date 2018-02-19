@@ -1,0 +1,15 @@
+**Preliminary**
+
+BNR Prolog was a research project of the Computing Research Lab of Bell Northern Research between 1988 and 1995.
+
+#### Papers
+1..
+	[Inside BNR Prolog], W. J. Older, CRL Internal, 1994
+	
+	[Constraint Arithmetic on Real Intervals], William Older & Andre Vellino, Constraint logic programming : selected research, ed. Frédéric Benhamou & A Colmerauer, MIT Press 1993 
+	
+&
+	[XInside BNR Prolog] <- link https://ridgeworks.github.io/BNRProlog-Papers/docs/Inside_BNRP/WendezVousWithWAMA.html
+	[Inside BNR Prolog] <- link docs/Inside_BNRP/WendezVousWithWAMA.html
+	[Constraint Arithmetic on Real Intervals] <- link docs/ConstraintAritmetic.pdf 
+	[X_Constraint Arithmetic on Real Intervals] <- link https://ridgeworks.github.io/BNRProlog-Papers/docs/ConstraintAritmetic.pdf 
