@@ -21,6 +21,8 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	- [Programming in Logic], André Vellino,  CRL Internal, 1990
 	
 	- [Costas Arrays], André Vellino,  CRL Internal, 1990
+	
+	- [An Incremental Garbage Collector for WAM-Based Prolog], William J. Older & John A. Rummell, JICSLP 1992: 369-383
 ---
 &
 	[Inside BNR Prolog] <- link docs/Inside_BNRP/WendezVousWithWAMA.html
@@ -32,3 +34,4 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	[Computing Time Intervals Logically] <- link docs/ComputingTime.pdf
 	[Programming in Logic] <- link docs/PIC-Prolog.pdf
 	[Costas Arrays] <- link docs/CostasArrays.pdf
+	[An Incremental Garbage Collector for WAM-Based Prolog] <- link docs/IncrementalGC/IncrementalGC.html

@@ -1,0 +1,301 @@
+[MyWordDocStyle]
+## An Incremental Garbage Collector for WAM-Based Prolog
+
+**William J. Older**
+**John A. Rummell**
+Computing Research Laboratory
+Bell-Northern Research
+P.O. Box 3511, Station C
+Kl Y 4H7, Ottawa, Ontario
+{rummell, older}@bnr.ca
+
+### Abstract
+
+This paper describes the incremental compacting garbage collector developed for the WAM implementation of BNR Prolog. It exploits the specific structure of the WAM memory management architecture to localize and then simplify the garbage collection problem. It uses a fast one-pass collection algorithm, linear in the amount of recovered heap data and independent of the total heap size, which requires neither reserved bits in basic cells nor any additional reserved storage. We have observed nearly complete garbage elimination with time penalties of a few per cent.
+
+### 1 Introduction
+
+Most garbage collectors for WAM-based implementations of Prolog are global (see [2],[3], and [4]). But because of their size and complexity, global garbage collections can be very expensive, and it is usual to postpone them until memory exhaustion is imminent. Thus in practice, the goal of global collection strategies is to avoid memory overflow. Conversely the avoidance of memory overflow tends to lead to a global strategy which can collect the maximum amount of free space. Ironically, the need to do massive garbage collections when available memory is low leads to more complex algorithms, which generally increases the cost of collection, thus reinforcing the need for postponement, and so on. To break out of this circle of mutually reinforcing factors becomes difficult.
+
+In this paper we describe a garbage collection algorithm for a WAM-based Prolog which achieves efficiency by taking advantage of detailed prior knowledge of the computing environment and the ability to alter that environment when necessary. The strategy pursued here, partly motivated by the desire to improve locality in virtual memory systems, is to significantly reduce the total memory requirements at the cost of (at most) a small, evenly distributed, time penalty. This requires that garbage collection be very fast, and hence presumably implies frequent collections over small regions, preferably using a simple algorithm. The design issues then focus on *which* regions to collect, and *when* to collect them, to best achieve the necessary performance. This leads us to exploit the relevant structural properties of the system, and even to modify them if necessary.
+
+In section 2 we review some relevant facts about WAM memory management. Section 3 focuses on the mechanism by which garbage is created, which leads to a strategy for incremental garbage collection described in section 4. Section 5 outlines the actual collection algorithm, which is treated in more detail in the appendix. In section 6 we look at compiler modifications to aid garbage collection in some important special cases. Section 7 discusses performance evaluation.
+
+### 2 WAM Memory Architecture
+
+The memory management of the Warren Abstract Machine architecture [6], [1] for Prolog implementations can be described conceptually in terms of four stacks , as seen in figure 1. (Originally the C and E stacks were combined into one for implementation reasons, but they are conceptually distinct.) The environment stack E and the heap H correspond directly with the stack of procedure activation records (environments) and the heap of a conventional language such as Pascal, except the Prolog "heap" allocates as a stack. Local variables, i.e., those which do not need to survive beyond the end of their procedure call, are allocated on E; everything else is allocated on H. Variables in E can point into H, but objects in H never reference E. Pointers in E always point from newer to older, so a stack discipline can be used to manage E.
+
+.box
+		   cp              trail             env             heap
+		.-------.        .-------.        .-------.        .-------.
+		|   C   |        |   T   |        |   E   |        |   H   |
+		|       |        |       |        |       |        |       |
+		|       |        |       |        |       |        |       |
+		|       |        |       |        |       |        |       |
+		|-------|        |       |        |-------|        |       |
+		|  lcp  |        |       |     ce'|       |        |       |
+		'-------'--------|-------|--------|-------|--------|-------|
+		    |         te'|       |        |       |      bh|       |
+		    v            |   T'  |        |   E'  |        |   H'  |
+		                 |       |        |       |        |       |
+		                 '-------'        |       |        |       |
+		                     |            '-------'        |       |
+		                     v                |            '-------'
+		                                      v                |
+		                                                       v
+centreblock> Fig. 1 WAM Memory Architecture
+
+For Prolog an additional stack, the choicepoint stack C, holds choicepoints which permit backtracking. Each choicepoint holds information required to return the computation to the state just before a non-deterministic call: the current (caller's) environment, the end of E and the end of H ("critical" addresses), and the values of the arguments to the current call and other control registers. No changes are permitted in E or H above (i.e., earlier) the points remembered in the last choicepoint (LCP), unless a record of the modification is recorded on the trail stack T. The current end of the trail is also recorded in each choicepoint. This 'no changes' requirement constrains the stack discipline in E significantly, since environments cannot be popped if they can be accessed directly or indirectly from a choicepoint.
+
+Whenever a failure occurs in the current computation, i.e., an inconsistency is detected, the state is restored to that recorded in LCP by resetting E and H and using the relevant portion of the trail to undo any other modifications to the remaining part of E and H. The computation then proceeds from the restored state using an alternative choice. The cut "!" operation resets the LCP register to its state before the call to the currently executing procedure body, thus removing all choicepoints created since the start of this call. Whenever choicepoints are removed by cuts, the trail is trimmed by removing any items on it which refer to locations in E or H which are now earlier than the new critical values.
+
+The WAM architecture includes several practices designed to minimize the size of E, in addition to the basic stack discipline. One is environment trimming, which deletes variables from an environment after their last use whenever possible. Another is last call optimization (LCO ), which releases an environment before the last call in the corresponding procedure body. Also, whenever environments on the E stack are made inaccessible by a cut,
+the next call will begin reusing the freed space. For this reason we are not concerned here with garbage collecting E, but only with H.
+
+Several features of all Prolog implementations greatly simplify garbage collection: pointers are under complete system control, cells are already tagged, and memory is systematically organized. But garbage collectors for WAM-based Prologs require that the heap be compacted and have the additional constraint that reordering of cells is not allowed across choicepoint boundaries. These restrictions severely limit the number of feasible algorithms. Weemeeuw and Demoen [7] suggest that this is one reason why Prolog implementations (such as the ones described in [2]) favor the Morris collector, which preserves the cell order.
+
+### 3 Garbage Creation
+
+Items constructed on the heap are initially referenced by either temporary variables or local environment variables; subsequent opcodes may cause these references to spread into other environment variables or heap variables. Since a variable is never unbound, garbage can only be created by the *disappearance* of a variable. For heap variables this only occurs during backtracking, and is therefore managed by the choicepoint mechanism. Temporary variables only hold values for very short periods, such as constructing temporary structures needed to make a call, and these structures often become garbage almost immediately after the call is made. Heap structures referenced by local variables in the E stack (e.g. intermediate results) may become inaccessible when those variables disappear. This happens when an environment is popped or when an environment is "trimmed", i.e., shortened by the removal of variables which are no longer needed. Finally, a cut which eliminates choicepoints, thus making some environments inaccessible, can also implicitly create garbage.
+
+The crucial observation is that *when these operations create garbage on the heap, that garbage is always in the tip region H' past the critical point remembered in the LCP*. Temporary structures used to hold call arguments must be retained if, and only if, that call has left a choicepoint, since backtracking would need to restore those arguments. Environments need to be retained whenever they are accessible from choicepoints, so only environments created since the last choicepoint can actually be discarded. Environment trimming is also only permitted when the environment is more recent than the LCP, and this is enforced by the elegant allocation mechanism in the WAM design. Finally, whenever garbage is created by a cut, that garbage will be in the (post cut) heap tip region.
+
+Even though garbage is only ever created at the tip of the heap, if not discarded immediately, it soon becomes buried by new data and new choicepoints. However, this indicates that if one can do a small garbage collection over the tip of the heap sufficiently often, it will eliminate garbage before it becomes buried. This idea is explored in the next section.
+
+### 4 Incremental Garbage Collection
+
+The principle difficulty with garbage collecting a small region in a large system is finding all the possible external references into the region. The basic idea that we will develop here is that *if the system can choose exactly when to do garbage collections, then the number of external references can be limited to a small list of known locations*. Specifically, the standard WAM choicepoint/trail mechanisms can provide all external references at no additional cost, as was noted in [2].
+
+Let LCP be the last existing choicepoint created. Recall that LCP holds the heap register (hp'), current (caller) environment pointer ( ce'), and end of trail (te') from the time of its creation. If we focus on the tip region H' of the heap (between hp' and the current hp ), we notice that:
+
+* There are no choicepoints accessing H'.
+* Accessible environments possibly accessing H' are the current one (ce) and those environments accessible from ce but after ce'.
+* All other permanent variables in E or heap variables outside of H'(i.e., before hp' and ce') which can possibly access H' are on the trail between te' and te.
+
+The last point is the crucial one, and very specific to Prolog. The general argument for it is:
+
+>> variables are the only things that can change and reference a heap structure,
+>> variables created before LCP could not have referenced iterms in H' before H' existed,
+>> hence old variables which reference into H' must have been bound since LCP was created,
+>> either they are on the trail as indicated or they are not,
+>> if they are not, then backtracking to LCP would fail to reset a variable that should be reset, which would imply an incorrect implementation,
+>> therefore, a correct implementation implies they are all on the trail.
+
+It follows that a partial garbage collection over H' need only traverse
+
+1.. - the environments from ce to ce' (via the return linkage);
+	- the trail from te to te';
+	- any temporary variables in current use.
+
+This suggests an answer to the question of where local collections should be done. However,this conclusion has an exception: certain WAM instructions, such as !`unify_variable(Yn)`! (in write mode) *assign* environment variables to point into the heap, and, as an optimization, do not trail these bindings, even when the variable is before the critical address recorded in LCP. This causes no problems on backtracking precisely because the operation does not look at the value of the variable before overwriting it. This problem was noted in [2], where the response was to remove these optimizations. One solution for this problem is to always include ce' in the list of environments to be scanned, since ce' is the only environment not already scanned in which this problem can occur, and then only on calls made later than the one which created LCP.
+
+There are, however, several problems caused by the need to scan environments:
+1..
+	- The worst problem is that environments may contain *uninitialized* variables, as one of the advantages of the WAM design is its ability to avoid having to initialize the variables in an environment. Usually these uninitialized cells contain leftovers from some earlier backtracking cycle, so they syntactically look like valid Prolog terms, and frequently point into H'. Acting on them as if they were valid (and there is no conclusive way to detect all invalid terms) can cause fatal problems, e.g., if it results in the breakup of a necessarily contiguous structure. This problem was addressed in [2) by eliminating this optimization.
+	- The mechanism of environment trimming operates by making environments variable length, with the current length specified only at calls. In particular, except at calls, the length of the current environment is unknown. An additional field in each environment could, of course, be used to hold the last known size between calls.
+	- A one-pass algorithm (see next section) requires that every external reference is handled *exactly* once. Since a variable can only be bound at most once in any forward computation, trail entries are known *a priori* to be mutually distinct. Correctness implies that distinct environments do not overlap and therefore have mutually distinct variables. Environments *after* ce' will not have any variables on a trimmed trail from te' to te, by definition of trimming, so these environments are disjoint from the trailed addresses. However, ce' may have variables which were also trailed after LCP's creation, and which will remain after trimming, so a mechanism for eliminating possible duplicates between the trail and ce' becomes necessary.
+
+In view of these problems, we decided that it was preferable to limit the times at which garbage collection can occur - the "garbage collection opportunities" - to those in which the environment list needing scanning is empty. Note that this occurs only when returning from the call that created the last choice point. This is a partial answer to the question of when collections should be done.
+
+To accomplish this, the !`proceed`! opcode was modified to do the garbage collection when it is returning from the specific call which created the LCP, and if other control conditions are met. (Note that while in most cases !`dealloc`! is followed immediately by !`proceed`!, it is possible, because of last call optimization, for the !`proceed`! to be in a different procedure entirely.) This choice implies that in the absence of "!", every computation which leaves at least one choice point will have had at least one opportunity to do garbage collection. Since this applies recursively it suggests that there should be a sufficient number of opportunities, and that each opportunity is somewhat different, thus avoiding repeated collecting over the same data.
+
+### 5 Garbage Collection Algorithm
+
+We will now describe briefly a suitable collection strategy, and then return to the more important issue of when to execute it. A specific example, the algorithm for the WAM-based version of BNR Prolog, is given in the appendix. Since the collection algorithm may be executed many hundreds of times a second, it is important that it have very low overheads (e.g., no significant initialization costs), ideally depend linearly on the amount of *recovered* data, and be independent of the sizes of H' and H. Since the algorithm is not intended to run in conditions of critically low memory, the rest of the heap may be used for auxiliary storage.
+
+The algorithm must of course preserve the logical structure of terms, but it need not preserve the physical structure. In particular, so far as WAM operations are concerned, the physical order of terms need not be maintained because there are no choicepoint boundaries in H'. However, reordering may cause the so-called "standard order" of variables to change without notice. The ordering of unbound variables is problematic anyway, since it has no logical foundation and is also context sensitive given that it depends on accidental and not essential properties of terms. It is also inconsistent with the WAM practice of globalizing permanent local variables on last calls. Implementations for which a *stable* standard variable order is required will need to use an order-preserving collection algorithm. Although this will make the costs linear in the size of H' rather than in the amount of recovered data, this may not make much practical difference since the average optimal size of H' is in fact quite small.
+
+If reordering is allowed, the most efficient algorithm appears to be of the one-pass recursive unfolding and copying variety, with a final shift of the "to-space" back over the "from-space." It requires as working store a small number of registers to hold various addresses, and a *contiguous* region of memory for a temporary stack area big enough to hold the recovered nongarbage from the collection region. The usued heap may be used for this if it is at least as big as H'.
+
+This algorithm copys the accessible data out of H' to the stack area as it is encountered. At the same time references are updated to point to where the data will eventually be placed, rather than its temporary location in the stack area, so the data structure is not usable until a final phase which directly copies the stack area back over region H'. This algorithm thus assumes that each cell it examines is visited exactly once. (*What* the cells reference can, of course, be referenced many times.) During the garbage collection, region H' serves several purposes as it holds a mixture of unprocessed data structures and redirection pointers used for updating, and implicitly serves as a map for detecting already visited areas.
+
+For each external cell (argument or trailed term) it is necessary to determine whether it is a referencing type, and if so, whether it references into the collection region H'. (Reference chains which go *through* the region can be eliminated because there are no trail items referencing into H'.) For each reference chain which terminates in H', we move the contiguous fragment being referenced (one or more cells) into the temporary stack area, and replace it with forwarding pointers into the stack area, and update the external cell to refer to the eventual destination. Note that there is no attempt here to "copy" a complete term - only individual contiguous fragments are being copied - and subterms are copied *blindly*. Hence this algorithm can be written as a pure iteration.
+
+After all external references have been processed, the stack contains a sequence of contiguous fragments which may themselves contain references back into H'. The algorithm can then be applied (again iteratively) to each cell in the stack area, starting at the *oldest*. The stack area now becomes used as a queue which grows in front of the "read head" for the iterative algorithm as newly copied fragments are added at the end. Since every item is only ever copied once, the algorithm terminates in time proportional to the recovered data and the amount of stack needed is at most equal to the size of the collection region.
+
+### 6 Refinements
+
+We have described the mechanism of garbage collection and its preconditions, and also a strategy for its use. It was found that in random samples of production code the garbage collection executed too infrequently. The principal culprit was cut "!" used at the end of a clause. For example, in
+~~~ prolog
+p :- q, r, s, !.
+p :- ...
+~~~
+the return from !`p`! (i.e., the !`proceed`! opcode at the end of the first clause) would be an opportunity for garbage collection provided !`q`!, !`r`!, and !`s`! had left no choicepoints. However, the same "!" which ensures that they did not, also ensures that !`p`! does not either, so the opportunity is "lost", or, more appropriately, postponed since the caller of !`p`! now has a (bigger) opportunity. The gamble here is that some clause up the call tree will either do a more efficient garbage collection, or fail (and thus eliminate the need for one) before a new choice point gets created. Unfortunately, this gamble was frequently lost rather than won.
+
+A fix for this problem is fairly easy if one can alter the WAM opcode for "!" at end of clause so that if there is anything to cut, then the cut is done in two steps: the first cuts back to the choicepoint for this call if it exists, (i.e., for !`p`! in the above example), and the second removes the choicepoint for !`p`!. A garbage collection opportunity could then be taken between these two steps. This increases the number of opportunities significantly, but still leaves some important special cases.
+
+Consider the typical tail-recursion optimization (TRO) of:
+~~~ prolog
+p([], ...).
+p([X|Xs], ...) :- q (...), r (...), !, p(Xs, ...).
+~~~
+The use of "!" here is to ensure that !`q`! and !`r`! leave no choicepoints, so that tail-recursion optimization is in fact possible. Such procedures often run for a long time, perhaps indefinitely. However, since the second clause has no !`proceed`! there is no opportunity to garbage collect before the end, if there is an end. However, the clause logically returns to the caller's environment via the !`dealloc`! opcode just before the final call to !`p`!, so a garbage collection opportunity is possible so far as the environment restriction is concerned, but the last choicepoint is always (because of !) one created before the call top, and is thus unusable.
+
+If, however, we were to write !`p`! (or transform it into)
+~~~ prolog
+p([], ...).
+p([X|Xs], ...) :- q(...), r(...), !, p(Xs, ...).
+p(...) :- fail.
+~~~
+then there would be an opportunity to garbage collect on each cycle of the tail recursion. Unfortunately, this is not a *cumulative* opportunity, and if we pass up one garbage collection opportunity (because the amount of heap involved is too small) the opportunity is lost forever. This example does suggest what is needed: a "virtual choicepoint" which is just at the boundary of the *first* call to !`p`!, in the sense that it is *after* the call to !`p`! with respect to the heap , but logically *before* the call to !`p`! so that "!" does not remove it, *as if* it were written:
+~~~ prolog
+p(...) : -p1(...).
+p(...) :- fail.
+p1([], ...).
+p1([X|Xs], ...) :- q(...), r(...), !, p1(Xs, ...).
+~~~
+This would enable cumulative opportunities for garbage collection at each step of the recursion and again at the end, after which the extra choicepoint can disappear.
+
+An efficient implementation requires modifying the WAM compiler. We chose to consider only clauses which have an environment, a final call subject to last call optimization, and a "!" immediately preceding the final call. In this case, the first modification is to change the !`alloc`! opcode in the clause head to a !`gc_alloc`!. The semantics of !`gc_alloc`! are the same as !`alloc`!, except that if the last choice point is not suitable for garbage collection of this call, then a new virtual choicepoint is created, and the cutback point (which is saved in the environment created by the !`gc_alloc`!) is set to point to it. This ensures that it will not be removed by the "!" later in the clause.
+
+The second modification is first to transform the standard WAM sequence at the end of the clause:
+~~~prolog
+...  ecut .. <call constructors> ... dealloc exec
+~~~
+to
+~~~prolog
+... <call constructors> . . . dealloc dcut exec
+~~~
+(where !`ecut`! is "! from an environment" and !`dcut`! is "! from register"), since !`ecut`! commutes with the constructors and
+~~~prolog
+ecut dealloc = dealloc dcut.
+~~~
+In the second step, in order to have easy access to the call arity, the !`dealloc dcut exec`! is combined into a new opcode, which also checks for the garbage collection opportunity.
+
+Finally, the handling of !`proceed`! opcodes was altered to discard virtual choicepoints as their last action, regardless whether they chose to do a garbage collection or not. This keeps virtual choicepoints from inadvertently blocking other opportunities for garbage collection.
+
+With these compiler changes, a tail recursion such as that above will get a virtual choicepoint created when the first call to !`p`! is done, and a garbage collection opportunity occurs at the "!". Since the virtual choicepoint is not removed, the second invocation of !`p`! will not need to create one (so there is no added trailing overheads due to subsequent recursion), and the opportunity at the second invocation's "!" extends back to the time of the original call. In particular, structures created solely to make the call can be collected. Such recursions often pass some data forward for a few steps, but much past state information becomes inaccessible after a few iterations, and such structures then become collectible. Finally, at the end of the recursion there is an opportunity to collect everything not actually exported from the call.
+
+This also applies to more complex mutual recursions, and in general to last call optimizations, provided that they are either inherently deterministic or contain a penultimate "!", as long as one of the clauses contains such a cut.
+
+### 7 Evaluation
+
+The usual trade-off between time and space appears here as a policy for deciding which garbage collection opportunities are worth taking. To explore this trade-off we initially kept the control as direct as possible by providing a single threshold parameter which can be used to adjust the frequency of garbage collection. When the value of this threshold is 0, garbage collection is inhibited; when its value is non-zero, garbage collection opportunities will be taken when ever the size (in bytes) of the heap tip is bigger than the threshold. Primitives were available to observe heap usage, the total number of garbage collections, and elapsed time.
+
+The choice of benchmarks for evaluating garbage collection policies in Prolog is always problematic, since even small changes in coding style or cut placement can have a substantial impact on the amount of garbage and when it is created. Therefore, to serve as a realistic illustrative example we have chosen a large application program which synthesizes call processing code for a telephone switch given high level descriptions of initial and final feature states. This program is a mixture of various, but mostly deterministic, predicates rather than a single algorithm and was written prior to the development of the garbage collector and not modified in any way.
+
+The upper graph in figure 2 shows several features which appear to be typical, based on the studies we have done to date. Normalized time and maximum space are relative to the control case with garbage collection disabled (threshold=O) but present. (We were unable to measure any performance difference between the system without garbage collection and the control case.) On the left side, with garbage collection done at *every* opportunity, the maximum heap usage (i.e., the high water mark) is kept to a minimum (about 20%), but the time impact is heaviest, about 15%. On the right, as the threshold is set higher than lOOKbytes, the time impact is reduced to about 3%, but worst case heap consumption approaches the control case. In between, around a threshold of 1Kbyte, there is a narrow valley in which one gets most of the possible compression, with a time degradation of about 5%, while in the 10-100Kbytes range for the threshold one gets only about from 70% to 50% of the possible compression but a 2% penalty. Note that the optimal threshold setting for memory recovery (about 250 memory cells) is surprisingly small.
+
+[figure2]
+
+centreblock> Fig. 2 Incremental Garbage Collection on a Large Benchmark
+
+The lower graph shows the decline in the number of garbage collections as the threshold is increased, and the rise in the average cost per garbage collection. The latter is given in units of average logical inference times (for this program) and is nearly platform independent. The cost per garbage collection includes the overheads associated with virtual choicepoints, and these overhead costs are the dominant term as the number of collections becomes small.
+
+Although this example appears to be qualitatively typical of the code we have examined, the numerical values of the maximum amount of compression and the time penalty for achieving it may vary considerably for different specific algorithms which do a lot of the same sort of thing. For example, highly non-deterministic predicates are usually quite incompressible since there is very little inaccessible data to discard; a low threshold can trigger many unprofitable garbage collections with a significant impact on time. Conversely, a too-high setting may hardly compact at all, and the overhead caused by any virtual choicepoints is then wasted. For this reason we are currently looking at mechanisms for automatically adjusting the threshold (based on the garbage/recovered ratio) to maintain the appropriate time/space trade-off.
+
+### 8 Conclusion
+This paper has described how the incremental compacting garbage collector developed for the WAM implementation of BNR Prolog exploits the WAM memory management architecture to localize garbage collection to the heap tip. It utilizes the existing trail mechanism to provide a convenient list of all external references, and by a careful choice of garbage collection points minimizes the number of external references. The one-pass recovery algorithm is linear in the amount of recovered heap data and independent of the total heap size. Hundreds of garbage collections can be done per second without significant performance degradation. On realistic benchmarks we have observed nearly complete garbage elimination with time overheads of a few per cent.
+
+### Acknowledgements
+
+The authors wish to thank R. Workman and A. Vellino of BNR for their suggestions and help.
+
+
+### 9 Appendix: Garbage Collection Algorithm
+
+The program given in this Appendix is a simplified version of the one developed for BNR Prolog. Two of the specific features of this language potentially make garbage collection more complicated: the support of cyclic terms and the use of contiguous structures (i.e., cdr coding, possibly with continuations) for representing both lists and structures. Since these continuations point to a location and refer implicitly to an indefinite number of adjacent following locations, they are interior pointers in the sense of [5]. The "end of structure" problem is handled by having all contiguous structures/lists terminated by either an !`end-of-seq`! mark or a continuation. Note that the arity of an indefinite structure is indefinite; the arity field in this case contains the physical length of the contiguous fragment and may be changed during garbage collection.
+
+The collection region is denoted R. The description makes use of the following global variables:
+
+> bh - start of region R (lowest address in R)
+> hp - end of region R (lowest address after R)
+> tsb - start of stack area ( can equal hp)
+> tsp - top of stack ( lowest unused address in stack area)
+> delta ( = tsb - bh) (used to compute final location)
+
+A term will be considered to have two fields: !`tag`! and !`ptr`!. Generally C notation will be used: prefix * is for pointer dereferencing and postfix ++ is for incrementing. Note that a pointer p is in region R iff (p >= bh) and (p < hp).
+
+~~~ prolog
+void garbage_collection()
+{  term *x;
+   tsp = tsb; /* empty stack at start */
+   delta = tsb - bh; /* translocation */
+   foreach (arg in arglist)   do rescue( address_of(arg));
+   foreach (address on trail) do rescue(*addr);
+   x = tsb;
+   while (x<tsp) do { rescue(x); x++};
+   copybytes( tsb, bh, (tsp-tsb)); /* copy back over R */
+   hp = bh + (tsp- tsb); /* update heap pointer */
+};
+~~~
+
+The key operation is !`rescue(a)`!, where !`a`! is an address of a Prolog term. Overflow checking on the stack and the case entry for long constants have been omitted for clarity. Items salvaged from the heap are replaced by forwarding pointers into the stackarea, tagged as continuations.
+
+~~~ prolog
+/*uses globals: tsb, bh, hp, delta; modifies tsp */
+void rescue( term *a)
+{  term t, *p, *start ;
+   int count;
+   while (a->tag=var) & (a->ptr in R) & (*a!=*(a->ptr))
+      do *a= *(a->ptr);  /* short circuit thru R */
+   switch( a->tag) {
+      integer, symbol: break; /* nothing to do*/
+      variable:
+           if ( a->ptr in region R )  /* must be self ref */
+            {  *tsp = *a ;            /* copy to stack */
+               a->ptr->ptr = tsp;     /* make redirection */
+               a ->ptr = tsp - delta; /* update ref */
+               tsp++;
+            }
+           else if (a->ptr in stackarea)
+            { a->ptr = a->ptr - delta }  /*redirect*/
+           else  ;  /* nothing to do */
+         break;
+      list, structure, continuation:  /* sequence of terms */
+          if (a->tag==continuation) & (a->ptr in stackarea)
+         { a->ptr = a->ptr - delta }  /*redirect*/
+         else if (a->ptr->tag==continuation)
+                    & (a->ptr->ptr in stackarea)
+         { a->ptr= a->ptr->ptr - delta }  /*redirect*/
+         else if (a^.ptr in R)   /* list or structure*/
+          { start=tsp;           /* save for arity update */
+           p= a->ptr; *tsp = *p; /* copy first item to stack */
+           p->ptr = tsp; p->tag= continuation; /*redirect*/
+           a->ptr = tsp - delta; /* update external*/
+           tsp++;                /* advance write head */
+           count = 0;
+           repeat                /* copy rest of sequence */
+              p++ ; t = *p;
+                 p->ptr = tsp; p->tag=continuation;
+                 *tsp = t;
+                 tsp++; count++;
+           until (t.tag==endseq) || (t.tag==continuation);
+           if (a->tag == structure)
+              update_arity( start, count, t);
+          };
+          break;
+   } /* endcases */
+}
+~~~
+
+
+### References
+
+>> [1] [Ait-Kaci91] Ait-Kaci, Hassan. *Warren's Abstract Machine*. MIT Press, Cambridge, MA, 1991.
+
+>> [2] [ACHS88] Appleby,K., Carlsson, M., Haridi, S., Sahlin, D. Garbage Collection for Prolog Based on WAM. *Communications of the ACM*, Vol 31, No. 6, June, 1988.
+
+>> [3] [Bruy81] Bruynooghe, M. The memory management of Prolog implementations. *Logic Programming*. eds. Tarnlund, S. A. and Clark, K. Academic Press, 1981.
+
+>> [4] [Bruy82] Bruynooghe, M. A Note on Garbage Collection in Prolog Interpreters. *Proceedings of the First International Logic Programming Conference*, September, 1982.
+
+>> [5] [Detl90] Detlefs, David L. Concurrent, Atomic Garbage Collection. (Ph.D. Thesis) CMU-CS-90-177, Carnegie Mellon University, 1990.
+
+>> [6] [Warr83] Warren, David H. D. An Abstract Prolog Instruction Set, *Technical Note 309*, SRI International, October, 1983.
+
+>> [7] [Weem90] Weemeeuw, P., and Demoen, B. Ala Recherche de la Memoire Perdue,or,Memory Compaction for Shared Multiprocessors. *Logic Programming:Proceedings of the 1990 North American Conference*, MIT Press, Cambridge, MA,1990.
+&
+	[figure2] <- image IncrementalGCfig2.png style='margin-left:50px' width='65%' height='65%'
+	@import ../MyWordDocStyle.mmk
+	@import /BNRProlog-Papers/myword/pkgs/box.mmk
+	centreblock> .. <- <div class=_centre>
+	plog> .. <- <span class='language-prolog'> text
+	!` .. `! <- <span class='language-prolog'> text
+	>> .. <- <div class=my_hanging> prose
+	@css
+		._centre {text-align: center;}
+		.language-prolog {font:1.2em monospace; font-weight:bold}
+		.my_hanging {padding-left:40px; text-indent:-20px}
+		
+		
