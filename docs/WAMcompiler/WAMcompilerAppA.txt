@@ -1,0 +1,560 @@
+%
+%
+% modified WAM clause compiler
+%
+% features-
+%   (standard WAM)
+%       last call and tail recursion optimization
+%       leaf procedure optimization
+%       arguments passed via registers
+%       register allocation optimization
+%       environment trimming
+
+% (additional)
+
+%       get reordering
+
+%       distinct write-unify ('push') instructions after puts
+
+%       BNR Prolog lists
+
+%       tailvars
+
+%       type and mode inference
+
+% RESTRICTIONS:
+
+%  no variadic predicates
+
+%  no variable name preservation
+
+%  no indefinite arity goals
+
+%  version 6:
+
+%      push_end instruction
+
+%      list arities removed
+
+%      tailvariable optimization
+
+
+% Notes:
+
+%   (1.) does not attempt to minimize temporary registers needed
+
+%   (2.) numbers temps from 1, so assumes temps kept separate from arg regs
+
+%   (3.) does not attempt to maintain temp vars across !, but could possibly do so
+
+
+% use ';' for infix Edinburgh-style list constructor
+
+            % list iterators
+
+op( 1000, fx, all). % one list
+op( 1000, fx, map). % two lists
+op( 1000, fx, postmap). % two lists, done in reverse order
+op( 1000, fx, merge). % three lists
+
+            % optional items concerning output
+
+%symbolic_names. % generate symbolic register names (perm/temp vars
+
+register(J,Name) :- J>0,J<8, swrite(Name,'D',J).
+
+gs(GS) :- memory_status(_,GS,_,_).
+
+
+    % temporary variables naming
+
+temp_name(N, Name):- symbolic_names, !, swrite(Name,'T',N).
+temp_name(N,N).
+
+
+    % permanent variables naming
+
+assign_name($var(Name,_..),N)  :-symbolic_names, !,swrite(Name, 'P',N).
+assign_name($var(N,_..),N).      % integer names
+assign_name($tvar(Name,_..),N) :-symbolic_names, !,swrite(Name, 'P',N).
+assign_name($tvar(N,_..),N).     % integer names
+
+%
+%            general utilities
+%
+
+member(X, [X,_..]).
+member(X, [_,Xs..]) :-member(X,Xs).
+
+append([],L,L) :-!.
+append([X..],[Y..],X) :- termlength(X,_,Y),!.
+
+    %(optimization when appending to indefinite list)
+
+definite( List):- termlength(List,_,[_T..]), not(tailvar(_T..)).
+
+% app - quick append single term for indefinite lists
+
+app(X,List) :- termlength(List,_,[X,_..]).
+
+length(X,N) :- termlength(X,N,_).
+
+arity(X,N) :- termlength(X,N1,_),
+              arg(N1,X,$tvar(_..)) -> N is 1 -N1 ; N=N1.
+			  
+indefinite(T) :- termlength(T,_,[TV..]), tailvar(TV..).
+
+copy(X,Y) :- decompose(X,Y,L), L.
+
+
+$trace( Msg, Data):-tr,nl, write(Msg, ':',Data).
+$trace(_,_).
+
+
+%             list iterators
+
+all F([],A..) :-!.
+all F([X,Xs..],A..):- F(X,A..), !, all F(Xs,A..).
+
+map F([],[_..],_..) : - !.
+map F([X,Xs..],[Y,Ys..],M..) :- F(X,Y,M..), !,
+     map F(Xs,Ys,M..).
+
+postmap F([],[_..],_..) : -!.
+postmap F([X,Xs..],[Y,Ys..],M..) :-
+     postmap F(Xs,Ys,M..), F(X,Y,M..),!.
+
+merge F([],[],[_..], _..):-!.
+merge F([X,Xs..],[Y,Ys..],[Z,Zs..],M..) :- F(X,Y,Z,M..), !,
+     merge F(Xs,Ys,Zs,M..).
+
+split([], [], [_..],_) :-!. %Note: second output is indefinite
+split([X,Xs..],[Ys..],[X,Zs..],Filter) :- Filter(X),!,
+     split(Xs,Ys,Zs,Filter).
+split([X,Xs..],[X,Ys..],[Zs..],Filter) :-split(Xs,Ys,Zs,Filter).
+
+%
+%      varmap utilities
+%
+%   [name,last block, perm/temp,nonvoid,bound, safe]
+
+temp(_(_,_,t,_..)).             % temporary variable filter
+perm(_(_,_,p,_..)).
+
+dif_block(I,I,_):-!.
+dif_block(_,_,p).
+
+% add variable to list- mark as permanent if block not same as last
+
+addvar(V,Indx,Varmap) :- var(V),!,                % not already seen
+     V=$var(Name,Indx,Perm,Nonvoid,Bound,Safe),!,
+     app(V,Varmap).
+addvar($var(Name,I,P,nonvoid,Bound,Safe), Indx, _) :-
+     dif_block(I,Indx,P).       %same or different block
+
+addtvar([V..],Indx,Varmap) :- tailvar(V..),!,     % not already seen
+     V=[U], U=$tvar(Name,Indx,Perm,Nonvoid,Bound,Safe),!,
+     app( U, Varmap).
+
+addtvar([$tvar(Name,I,P,nonvoid,Bound,Safe)], Indx, _) :-
+     dif_block(I,Indx,P).       %same or different block-
+
+% for adding temporary variables used to decompose structures
+
+addtemp(V,Indx, Varmap) :- var(V),
+     V=$var(Link,Indx,t,nonvoid,Bound,Safe),
+     app(V, Varmap).
+
+prtmap([T..]):-tailvar(T..),!.   % for debugging
+prtmap([X,Xs..]):-nl, write(X), prtmap(Xs).
+
+% generate integer list the same size as another
+
+index([],[],_):-!.
+index([X,Xs..],[N,Ns..],N):-successor(N,N1),index(Xs,Ns,N1).
+
+% split map separates the permanent from the temporary vars and numbers
+% the permanent variables
+
+split_map(X,[T,P]):-
+     split(X,P,T,temp),          % split variables
+     all perm(P),
+     index(P,Pn,1),              % number the permanents sequentially
+     map assign_name(P,Pn).
+	 
+	 
+% to find size of permanent environment
+%    assumes that things used last are near front of list,
+%    ie. last block field is decreasing
+
+$env_size([],_,N,N) :-! .
+$env_size([_       (_,Blk,_..),_..], B, N, N) :- Blk =< B,!.
+$env_size([_,Vs..],B,M,N):- successor(M,M1),$env_size(Vs,B,M1,N).
+
+env_size(Index,[_,P],N):-$env_size(P,Index,O,N).
+
+
+% numbering temporary variables
+
+$gen name(N,Nm,Name) :-successor(N,N1),
+     [temp_name(N,Name),N1=Nm]; $gen_name(N1,Nm,Name).
+
+$number_temps([TV..],_,_):-tailvar(TV..),!.
+$number_temps([$var(X,Last,_..),Xs..],N,Indx):- !,
+     [var(X), Last@=Indx]->$gen_name(N,N1,X); N=N1, !,
+     $number_temps(Xs,N1,Indx).
+$number_temps([$tvar(X,Last,_..),Xs..],N,Indx) :-
+     [var(X), Last@=Indx]->$gen_name(N,N1,X); N=Nl, !,
+     $number_temps(Xs,N1,Indx) .-
+
+number_temp_vars(Indx, [T,P],N) :- tr -> not(not(prtmap(T))),
+     $number_temps(T,N,Indx),!,    tr -> not(not(prtmap(T))).
+
+% argument register names
+
+registers(List,Rs) :- index(List,Ns,1), map register(Ns,Rs).
+
+%
+%              phase 1- classify vars (makes list of perm and temp vars)
+%
+
+succ(N,N1,N) :-successor(N,N1),!.
+succ(-1,0,0).
+
+classify_vars( (H:-[Bs..]),Varmap,Index) :-
+     collect_vars( [H,Bs..],[-1,Index..],-1, [V..]),
+           % mark head and first goal as 0
+     split_map(V, Varmap).
+collect_vars([],[],_,_).
+collect_vars([T,Ts..],[N,Ns..],N,VM) :-
+     symbol(T),!,succ(N,N1,_),collect_vars(Ts,Ns,N1,VM).
+collect_vars([T,Ts..],[N,Ns..],N,VM) :- structure(T),
+     succ(N,N1,M),
+     variables(T,List,TVlist,[]),
+     collect_vars(Ts,Ns,N1,VM),
+     all addvar(List,M,VM),
+     all addtvar(TVlist,M,VM).
+
+%
+%  normalform( Structure,Tvarmap, FlatStructure, List, Index)
+%     where list is of form [V1=S1,V2=S2 ...]
+%     (in bottom up, left to right order, with Sn also flat)
+%     ( flatstructure means nesting to one level only)
+
+normalform(F(A_..), [TempV,_], F(B..), List, Indx) :-!,
+     $flatten([A..], TempV, [B..], List, Indx).
+normalform( [A..],  [TempV,_],  [B..], List, Indx) :-
+     $flatten([A..], TempV, [B..], List, Indx).
+
+$cons( [X..], T, Y,     [X..], T=Y     ).
+$cons(F(X..), T, [Y..], [X..], T=F(Y..)).
+
+
+% $flatten(In, TempVarmap,Out, Diflist,Index)
+
+$flatten([], _, [], End/End,_) :-!.
+$flatten([$var(_A..),Xs..], TV, [$var(_A..),Ys..], List,Indx):- !,
+     $flatten(Xs,TV,Ys,List,Indx).
+$flatten([$tvar(_A..)], TV, [$tvar(_A..)], End/End,Indx) :- !.  % tvars
+$flatten([[],Xs..], TV, [[],Ys..], List,Indx):- !,
+     $flatten(Xs,TV,Ys,List,Indx).
+$flatten([[$tvar(A1,A2,A3,A4,A5,S)],Xs..], TV,
+     [[$tvar(A1,A2,A3,A4,A5,S)],Ys..], List, Indx):-S@=safe, ! ,
+           % tailvar optimization
+     $flatten(Xs,TV,Ys,List,Indx).
+$flatten([X,Xs..], TV, [T,Ys..], List/End,Indx) :- compound(X),!,
+     $cons(X,T,Y,X1,Res),!,addtemp(T,Indx,TV,),
+     $flatten(X1, TV, Y,  List/[Res,Rest..],Indx),
+     $flatten(Xs, TV, Ys, Rest/End, Indx).
+$flatten([X,Xs..], TV, [X,Ys..], List,Indx) :- %constants
+     $flatten(Xs,TV,Ys,List,Indx).
+
+%
+%               instruction repertoire
+%
+
+%         call instructions
+
+gen_call(not_tail, _, _,'!'(),ecut) :-!.
+gen_call(tail,     _, _,'!'(),cutreturn) :-!.
+gen_call(tail,     _, _,F(A..),exec(F/N)) :- length(F(A..),N),!.
+gen_call(not_tail, Index,VT,F(A..),call(F/N,Size)) :- length(F(A..),N),
+     env_size(Index,VT,Size).
+
+%         allocation/deallocation of environment
+
+allocation([_,[]], X/X ) :-!.               % no permanent vars
+allocation([_,P],  [alloc,X..]/X).
+
+deallocation(not tail, _,  X/X) :-!.
+deallocation(tail, [_,[]], X/X ) :-!.
+deallocation(tail, [_,P],  [dealloc,X..]/X).
+
+%  utilities for building instructions
+occurrence(B,'_var') :-var(B),!,B=1.
+occurrence(1,'_val').
+
+safety(put,Unsafe) :-!.
+safety(_, safe).
+
+void( get,   get_void).
+void( unif,  unif_void).
+void( push,  push_void).
+
+
+%          var_instruction( Direction,Permanent, Bound, Safe, Ins)
+
+var_instruction(void, D, t, 1, safe, UV) :- void(D,UV),!.
+var_instruction(Vd, D, P, B, S, Ins):- safety(D,S),
+     occurrence(B, Occ), swrite(Ins,D,Occ,P),!.
+
+%  sub sequence instructions
+
+get( sub,  unif).
+put( sub,  push).
+
+%
+
+reg_optimization( put_valt(V,V),[]) :- !.     %eliminates temp registers
+reg_optimization( get_void(V,V),[]) :- !.
+reg_optimization( unif_void(V), unif_void):- !.
+reg_optimization( push_void(V), push_void):- !.
+reg_optimization( tunif_void(V),tunif_void) :- !.
+reg_optimization( tpush_void(V),tpush_void) : - !.
+reg_optimization( X,X).
+
+
+%
+%           mapping terms
+%
+%  sub( Term, unify_code, Direction) handles substructures
+
+sub( $var(V,_,P,Vd,B,S), Code, Dir) :-!,
+     var_instruction(Vd,Dir,P,B,S,UC),
+     reg_optimization( UC(V),Code).
+sub( [$tvar(V,_,P,Vd,B,S)], Code, Dir) :-!,
+     var_instruction(Vd,Dir,P,B,S,UC),
+     reg_optimization( UC(V),Code).
+sub( Cons, UC(Cons), Dir) :- swrite(UC,Dir,'_cons').
+
+map_sub([], [end_seq], unif):-!.
+map_sub([], [push_end), push):-!.
+map_sub([$tvar(V,_,P,Vd,B,S)], [Code], Dir) :-!,
+     var_instruction(Vd,Dir,P,B,S, UC1), swrite(UC, 't',UC1),
+     reg_optimization( UC(V), Code).
+map_sub([X,Xs..],[Y,Ys..],Dir) :- sub(X,Y,Dir),!, map_sub(Xs,Ys,Dir).
+
+xsub( [], Src, [GN(Src)], Dir) :- swrite(GN,Dir,'_nil'),!.
+xsub( [$tvar(V,_,P,Vd,B,S)],Src, Code, Dir) :-
+     S@=safe, !,        % tailvar optimization
+     var_instruction(Vd,Dir,P,B,S, GV),
+     reg_optimization( GV(V,Src), Code).
+xsub( [L..], Src, [GL(Src),C..], Dir):- !, swrite(GL,Dir,' ',list),
+     Dir( sub, SDir), map_sub( L, C, SDir).
+xsub( F(L..), Src, [GL(N,Src),C..], Dir) :- !,
+     arity(F(L..),N), swrite(GL,Dir,' ',struc),
+     Dir( sub, SDir), map_sub( [F,L..], C, SDir).
+
+
+% xform( Term, Src, Code,Indx, Direction)
+
+xform($var(V,L,p,_,B,S),Src, putunsaf(V,Src), L,put) :-var(S),!,S=safe.
+xform($var(V,_,P,Vd,B,S),Src, Code, , Dir) :-!,
+     var_instruction(Vd,Dir,P,B,S, GV),
+     reg_optimization( GV(V,Src), Code).
+xform( Sub, Src, Code, _, Dir) :-compound(Sub), !,
+     xsub( Sub, Src, Code, Dir).
+xform( Cons, Src, GC(Cons,Src),_, Dir) :- swrite(GC,Dir, '_cons').
+
+% for handling decomposition sequences
+
+map_cons( $var(V,_,t,_,1,safe)=S, Code,_, Dir) :-xsub(S,V,Code,Dir).
+
+% protect( flatlist, list_of_disallowed_registers)
+%  :- prevent variables/tailvariables on list 1 from being assigned to
+%     regs on list 2
+
+protect( F(A..), RL) :-!,protect( [F,L..], RL).
+protect ( [],_) .
+protect( [$tvar(V,_..)], Rlist) :- {nonvar(V)-> not(member(V,Rlist))}.
+protect( [$var(V,_..),L..],Rlist) :-!,{nonvar(V)-> not(member(V,Rlist))},
+protect(L,Rlist).
+protect( [_,L..], Rlist) :- protect(L,Rlist).
+
+%
+%                                Head
+%
+%  rearrange head - put constants and vars before structures and lists
+%  rearange( Args, Regs, Deferrred_args,Deferred_regs, Newargs,Newregs)
+
+rearrange( [],       [],      PA/[],      PR/[],       PA,PR) .
+rearrange( [A,As..], [R,Rs..],PA/[A,EA..],PR/[R,ER..], FA,FR) :-
+     compound(A),!,
+     rearrange(As,Rs, PA/EA,PR/ER, FA,FR).
+rearrange( [A,As..], [R,Rs..],PA,         PR,          [A,FA..],[R,FR..]) :-
+     rearrange(As,Rs,PA,PR,FA,FR).
+
+decompose_head( [], [], [], E/E,_).
+decompose_head( [$var(V,A..),As..], [R,Rs..],Cons, [Ins,More..]/E,VM) : - !,
+     xform( $var(V,A..), R, Ins, O,get),!,
+     var(V)->{ nonvar(V) ->not( member(V,Rs))},
+     decompose_head(As, Rs,Cons,More/E,VM).
+decompose_head( [A,As..],[R,Rs..], Cons, [Code,More..]/E,VM) :-
+     compound( A),!,
+     normalform( A, VM, AN, Cons/Cons2,0),     % decompose substructures
+     protect( AN, Rs),
+     xform( AN, R, Code, 0,get),!,
+     decompose_head( As,Rs,Cons2,More/E,VM),!.
+decompose_head( [A,As..],[R,Rs..], Cons, [Ins,More .. )/E,VM) :-
+     %  constants
+     xform( A, R, Ins,0, get),!,
+     decompose_head(As, Rs,Cons,More/E,VM).
+
+
+generate head sequence( F(As..),[ Headseq..],VM) :-symbol(F),
+     arity(F(A..),N), N>=O,                    $trace(head, F(As .. )),
+     allocation( VM,Headseq/Hseq2),
+     registers(As,Regs),                       %make corresponding registers
+     rearrange( As,Regs, TA/TA,TR/TR, S, R ),  $trace(head, [S,R]),
+     decompose head( S,R, Rlist,Hseq2/Clist,VM),
+     $trace(headseq2,Hseq2/Rlist),
+     map map_cons( Rlist, Clist, 0, get).
+
+
+%
+%                                Body
+%
+%  everything to generate a call:
+
+generate_call_sequence( F,Index, [Code],VT,Tail) :-
+     symbol(F),!,$trace(call, F),
+     gen_call( Tail,Index,VT,F(),Code),
+     number_temp_vars(Index,VT,1).
+generate_call_sequence( F(As..),Index, [Code..],VT,Tail) :- symbol(F),
+     arity(F(As..),N), N>=O, !,                 $trace(call, F(As..)),
+     gen_call(Tail,Index, VT,F(As..), Call),
+     deallocation(Tail,VT, Cs/[Call ]),         $trace( 'call->',Cs),
+     normalform( F(As..), VT, F(Bs..), List/[],Index),
+     $trace(call,F(Bs..)/List),
+     map map_cons( List, Clist, Index,put), !,
+     $trace('constructor code',Clist),
+     registers(Bs,R),
+     merge xform( Bs, R, Callseq,Index, put),   $trace(callseq,Callseq),
+     number_temp_vars(Index,VT,1),
+     append(Clist,Callseq,C1),
+     append(C1,Cs,Code),!.
+generate_call_sequence( F(As..),Index,Code,VT,Tail) :-
+     generate_call_sequence( call_i(F(As..)), Index,Code,VT,Tail).
+
+
+compile_body( [], [], [proceed],VT,_) :-!,number_temp_vars(0,VT,1).
+compile_body( [Last call] , [N] , [comment (Last) , Code],VT, [Last]) :-!,
+     generate_call_sequence(Lastcall,N,Code,VT,tail).
+compile_body( [F,Fs..], [N,Ns..], [comment(OC),C,Cs..],VT, [OC,OCs..]) :-
+generate_call_sequence(F,N,C,VT,not_tail), !,
+compile_body(Fs,Ns,Cs,VT,OCs).
+
+%
+%           compile_clause
+%
+compile clause( (H:-[Bs..]) , Code):-
+     copy( H:-Bs, CH:-CB),
+     classify_vars( (CH:-[CB..]), M, Index ),!,
+     generate_head_sequence(CH, Head,M),!,
+     compile_body(CB,Index , Bcode,M, Bs),!,
+     append([hcomment(H),Head..], [neck,Bcode..],Code),!.
+
+
+%
+%
+%            Output and Input prep
+%
+%
+%  transform clause to standard input form
+%      (with all calls definite functors)
+
+funcb( H, call_i(H)):- var(H),!.
+funcb( F(A..), call_i(F(A..))) :- var(F);indefinite(A),!.
+funcb ( !, !):- !.
+funcb( H, H1) :-funch(H,H1).
+
+
+funch( H,H) :-structure(H), !,not( indefinite(H)).
+funch( H,H()) :-symbol(H).
+
+stdform( H:-[B..], H1:-[B1..]):-funch(H,H1), !, map funcb(B,B1),
+     termlength(B1,_,[]).
+stdform( (H:-B), H1:-[B1]):-funch(H,H1), !, funcb(B,B1).
+stdform( H ,H1:-[]):-funch(H,H1),!.
+
+% need to assert any operator defintions (if possible)
+
+opcheck( op(A,B,C):-[]) :-assert( op(A,B,C) :-[]).
+opcheck( _).
+
+cc(F,Strm) :-stdform(F,SF), opcheck(SF),compile_clause(SF,C),!,
+     all nnout(C,Strm,1),nl(Strm),nl(Strm). -
+cc(F) :-cc(F,1).
+
+nnout(X,F,N) :-not(not( out(X,F,N))).
+
+out ( [],F,_):- !.
+out( [X,Xs..] ,F,N) :- !, successor(N,N1),out(X,F,N1), out(Xs,F,N).
+out( O(A,A),_,_) :- O=get_vart; O=put_vart,!.     % discard no-ops
+out( hcomment(C),F,N) :- nl(F),swrite(F, ';'), swriteq(F,C),
+     swrite(F, ':-'),!.
+out( comment(C),F,N) :- nl(F),tab(c,T), swrite(F,T),swriteq(F,C),!.
+out( X,F,N) : -nl(F),tab(N,T),swrite(F,T),
+     $quotable(X)-> $putq(X,F) ; $putf(X,F),!.
+
+             % assembler style output
+
+$quotable(F(_..)):-$quote(F).
+$quote( unif_cons).
+$quote( push_cons).
+$quote( put_cons).
+$quote( get_cons).
+
+$putq( Op(A),F):-swrite(F,Op,'\t'), swriteq(F,A).
+$putq( Op(A,B),F) :-swrite(F,Op, '\t'),swriteq(F,A),swrite(F, ',\t',B).
+putq( Op,F) :-swrite(F,Op).
+
+
+$putf( Op(A),F) :-swrite(F,Op, '\t',A).
+$putf( Op(A,B),F) :-swrite(F,Op, '\t',A,',\t',B).
+$putf( Op,F) :-swrite(F,Op).
+tab(1,'        ').
+tab(2,'        ').
+tab(3,'        ').
+tab(c,'                               ;').
+
+%
+%             mainline
+%
+%
+mreadfile(_FileName, _Term) :- !, % modified to provide IO checking
+     open(_Stream, _FileName, read_only, IO_err1),
+     not(IO_err1=O) -> [ write('I/O error ', IO_err1, ' opening file ',
+           _Filename), fail],
+     repeat,
+     get_term(_Stream, _T, IO_2),
+     IO_2=0 -> (_Term = T)
+          ; IO_2 >0 -> [nl, write('Syntax error', IO_2, '
+                                  in' ,_Filename) ]
+                       ; [close(_Stream, _), failexit(mreadfile)].
+
+
+cmpf( Filename ) :-symbol(Filename),
+     concat(Filename,'.a',Outfile),
+     open(Out, Outfile, read write,0),
+     nl, T1 is cputime,
+     foreach( mreadfile(Filename,Term) do
+          [nl(Out),nl(Out),
+          cc(Term,Out) ->write('.') ; [ write('*'),nl, write(Term)]
+          ]
+     ),
+     T2 is cputime, DT is T2 - T1,
+     nl, write( time= DT),
+     set_end_of_file(Out),
+     close(Out,0).
+

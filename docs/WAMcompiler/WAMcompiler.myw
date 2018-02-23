@@ -1,0 +1,628 @@
+[MyWordDocStyle]
+## A WAM Compiler for BNR Prolog
+
+**William J. Older**
+Computing Research Laboratory
+Bell-Northern Research
+P.O. Box 3511, Station C
+K1Y 4H7, Ottawa, Ontario
+
+### Abstract
+
+This paper discusses the issues involved in providing a WAM-style compiler technolgy for BNR Prolog and describes a prototype clause compiler and its partial verification. It is estimated that this compilation technique, which imposes only modest restrictions on the language, will produce code of about the same size as that used in the present interpreter but about an order of magnitude faster.
+
+.TOC	{#id TableOfContents}`        `**Table of Contents**
+
+### INTRODUCTION
+
+Our work with Prolog over the past few years has been conditioned by the existence of our proprietary BNR Prolog interpreter, which has allowed us to develop both the language and its environment in ways that would not generally have been possible otherwise. However, the basic interpreter technology (which was originally designed in 1986) is not as efficient as current Prolog compiler technologies for today's hardware platforms (MAC, SUN). On the other hand, many of the basic features which have been added to BNR Prolog would have been much more difficult to add to a compiler-based system, so that our current position has some benefits as well as some liabilities.
+
+Among the decisions which face us is whether we need to have a compiler technology available as well as (or instead of) our current interpreter. One option, of course, would be to buy a "standard" Prolog compiler (e.g. Quintus or BIM). The direct costs of such an acquisition provides at least a benchmark against which the costs of in-house development can be measured. However, this null position has some strategic drawbacks which must be considered. First, such external acquisitions will have limitations on their potential use in possible products and limitations on providing desirable extensions. Even if we purchase full legal rights to modify, there are substantial development costs to provide the equivalent of our current environment. Second, most of the standard products (for UNIX environments) lack many of the features of BNR Prolog. Although some of these features (e.g. graphics primitives) may be straightforward additions, others (e.g. constraints, tasking) require deep modifications.
+
+Relative to this null position, we can ask the following questions:
+* What is the development effort to provide an in-house compiler technology?
+* How would it compare (features, performance) with what is externally available?
+* What existing features are difficult or expensive to compile?
+This paper reports on some work that has been done to provide some answers to these questions.
+
+<#TableOfContents>
+
+### WAM TECHNOLOGY
+
+Most high performance Prolog compilers are based on the "Warren Abstract Machine" or WAM. This design was [Warr-83] devised by D.H.D Warren and was about the fourth or fifth substantially different design due to him. (An earlier *structure-sharing* Warren design is similar to the current BNR Prolog interpreter.) The motivation for this design was to get both high performance (through off-line compilation) and better memory management (including last call optimization (LCO) and tail recursion optimization (TRO)); this is significant because previous techniques for achieving LCO/IRO tended to *reduce* performance. Since there are many variations possible on the details of a specific WAM design, it is best to concentrate first on the fundamental principles, which are described below.
+
+The fundamental problem to be solved stems directly from the logical meaning of a Prolog clause as a *universally quantified implication*, which implies that each clause can be used any number of times in a proof. Hence, it is logically necessary to copy each clause (to the *global stack* (sometimes called the "heap") where all dynamic data structures live) before doing the unification of the head with the goal; whenever the clause fails the effort of making the copy will have been wasted.
+
+The *structure-sharing* technique avoids copying the clause altogether, by making the clause variables indirect references through an *environment* (stack frame); in this case copying can be replaced by initializing a new instance of the environment on each call, much as in a conventional recursive language like Pascal. (However, unlike the case in Pascal, the environment can become referenced by other "older" variables through binding to structures, so it often cannot be popped at the end of the procedure call. The Pascal equivalent would be the exportation of dynamic pointers to locally declared structures, which would lead to dangling pointer errors in systems which permit it.) When environments are kept on the same stack as activation records and chokepoints, their separate stack disciplines get in each other's way and block memory recovery. In addition, structure sharing creates two other problems: variables which get bound to structures require space for *two* pointers (one to the "type" of the structure and one to the proper environment) and the possibility of outstanding pointers into the code (i.e., type) of a clause makes it difficult to recover codespace on *retract*.
+
+The basic idea of the WAM is to retain copying in principle, but to implement copying by means of pure code which constructs the required data structures, and avoid actual construction whenever possible. This produces an implementation competitive with structure sharing; additional optimization possibilities, which are discussed below, can then be included to achieve even higher performance.
+
+#### Incremental Copying
+
+The design of a competitive copy-based implementation then must first of all avoid the wasted work of copying parts of clauses that are never used. If one imagines a copying 'process ' which keeps just ahead of the unifications, and which 'suspends ' on each call, the wasted copies of multi-call bodies can be replaced with the cost of suspending/resuming the copy process. This suspension is equivalent to rewriting each multi-call clause as a set of double-call clauses:
+	p(X,Y,Z):- u(X), v(Y), w(Z,X).
+becomes
+	p(X,Y,Z) :- u(X), p1(X,Y,Z).
+	p1(X,Y,Z):- v(Y), p2(X,Z).
+	p2(X,Z) :- w(Z,X).
+The intermediate calls p1,p2 correspond to the successive tails of the original clause and to suspension points for copying; the variables passed to these calls (*permanent variables*) record the (entire) current state of the clause execution (including copying). In the implementation these extra calls are dispensed with, but the array of variables which would have been passed (i.e. the state) is kept. This state is called an *environment*, although it is conceptually very different from the environment in a structure-sharing system.
+
+Note that clauses with bodies containing zero or one calls (which are fairly common in Prolog) require no environment at all.
+
+#### Commute copying/construction with unification
+
+The second major optimization is to allow unification to get ahead of the copying/construction whenever possible (e.g. whenever the incoming data is not a variable), for then copying is unnecessary. (The crucial test is that global stack variables can only be bound to copied items.) Since the status (variable or non-variable) of incoming data is only known at run time, all WAM opcodes that deal with incoming data will have two modes of operation: *read mode* (when incoming data is not a variable) and *write mode* (when it is). Copying will only be required in write mode; read mode merely compares the incoming data with what would have been created by copying/construction. (This necessary operational ambivalence severely constrains the form of the WAM opcodes in the heads of clauses, since they must be kept at a high enough level that they may be interpreted either as comparators or as constructors.)
+
+#### Compile out the structure copies
+The copying of nested structures can be statically decomposed by introducing additional *temporary* variables. (This eliminates the overheads of copying nested structures.) These temporary variables do not need to be part of the environment as they are never used across a call. Variables in the original source code which are not used across a call also can be omitted from the environment, and treated as temporaries. All temporary variables can be placed in a single area of memory or kept in registers, if available.
+
+Note that in clauses with zero or one calls, all variables are temporary since none are permanent. In larger clauses, most of the temporary variables will be those introduced by structure decomposition.
+
+#### Reorder operations
+
+Most of the WAM opcodes (except 'call') (at this stage) will commute with one another, so may be reordered if desired. In particular, cheap tests (that can fail) should be done before (expensive) copies.
+
+#### Eliminate variable initialization
+
+Once one has statically determined the order of operations, the notion of *first occurrence* of a variable becomes well defined. Since one knows that in principle such variables are unbound, it is unnecessary to examine their contents before deciding what to do. If such variables are always left in a proper state after their first occurrence operation, then initialization is unnecessary. After this optimization has been done, opcode reordering is no longer in general safe.
+
+#### Environment trimming
+
+Environment size can be minimized (at very small cost) by putting those variables needed last into the low end of the environment and adjusting downward the environment size at each call.
+
+#### LCO/TRO
+Last call optimization ( which includes tail recursion optimization as a special case) requires that the deallocation of the environment be done *before* the last call in the body; the last call can then be replaced by a "goto". Formally, the WAM opcode sequence
+		call, dealloc, return.
+is replaced by
+		dealloc, exec.
+The requirement for this is that all possible references to the current environment must be eliminated (globalized) before the deallocation. Although this entails a non-trivial run-time check, static analysis can indicate those cases where the check is unnecessary. (Fortunately, it is usually unnecessary.) This means that some opcodes appear in two forms, a regular (cheap) form, and an (expensive) 'unsafe' form.
+
+#### Effective register use
+
+If sufficient machine registers are available to hold the arguments and temporary variables, use them. Also, some operations which degenerate into assignments between local variables can be eliminated entirely by proper allocation/overlaying of registers. (Relatively few registers (e.g. 8-16) are required to provide significant reduction in time, especially on current memory-access-limited processors.)
+
+<#TableOfContents>
+
+### PRAGMATIC CONCERNS
+
+In addition to the basic principles described above there are a number of contextual issues which can radically affect the compiler design, both in terms of general strategy and in terms of specific details.
+
+#### Code size vs. speed
+
+For machines of the general type of the 68020 or 68030 there is a severe tradeoff between code size and performance for Prolog. Compiling to native code produces the best performance, but code sizes can explode significantly. Compiling to emulated byte-codes minimizes code size, but the interpretation of byte codes adds considerable overhead. The differences in performance and code sizes can be up to an order of magnitude (judging from the systems we have looked at), so it is important to know what sort of target environment and application area you are aiming at. (A compromise position is described below.)
+
+#### Unit of compilation
+
+Since Prolog lacks any static nesting of scopes, the natural basic unit of compilation is the individual clause, which leads to an incremental compiler appropriate to an interactive environment. In this case each clause is compiled in isolation and can make no (or very limited) assumptions in general about the predicates it calls or even about other clauses for the same predicate. At the other extreme, if the unit of compilation is the entire program, it is possible to make use of knowledge about all the clauses/predicates in the ·program while compiling each one. Various sophisticated techniques (partial evaluation, type inference) then become possible. Intermediate compilation units include the predicate ( allowing for sophisticated clause indexing) and the file or module. (We will be concerned mainly with clause compilation, both as this is the common part of the problem and is the part which generally provides the largest gains.)
+
+#### Memory issues
+
+The memory model influences the design in various ways. The size of available memory is a prime factor in the codesize/performance tradeoff. The natural size of memory cell and possible addressing restrictions may influence coding details. The possibility of ignored bits in address'e.s which can be used for tagging can have a major effect on coding details. The availability of hardware memory protection can have a critical effect if it allows one to skip or minimize explicit stack overflow checking. Demand paging or processor cacheing, since they are highly sensitive to different patterns of memory references, can strongly favor one approach or another. (Roughly speaking, demand paging favors copying, while cacheing (as in 88k) favors structure sharing).
+
+<#TableOfContents>
+
+### BNR PROLOG LANGUAGE EXTENSIONS
+
+The approach taken here is to start with a basic W AM clause compiler for standard Prolog
+and then add features needed to support the BNR Prolog language extensions; language
+extensions which are inconsistent with the basic W AM approach will generate restrictions
+on what can be compiled and the nature of the conflict will be catalogued.
+
+The language extensions to be dealt with can be classified into five groups:
+
+1.. +
+		basic data structures (including the lack of code/data distinction, variable functors, variadic functors, tail variables, etc.). Most of these can be supported by the addition of new opcodes; the exceptions being (a) variadic predicates, and (b) indefinite arity calls (at runtime), both of which conflict with the "definite arity " assumption of WAM and the use of registers for argument passing.
+		
+	+
+		cyclic structures. These require no changes to the basic WAM compiler, but the runtime support package must be modified appropriately.
+		
+	+
+		constraints ({}). These require only a minimal change to the compiler in the form of the addition of a new opcode neck corresponding to ": - ", which checks for any newly activated constraints and arranges for them to "fire". However, note that the possibility of constraints blocks some forms of static type inferencing which might otherwise be desirable. Thus, in the absence of constraints, the clause
+			f (X, 0) :- integer(X), ...
+		could be compiled in such a way that the `integer` check is done as part of the head checking; constraints block this since X could legitimately be a variable during head unification and become instantiated to an integer by the time the clause body begins execution.
+		
+	+
+		extra control primitives `failexit(name)`, `cut(name)`. These are *inconsistent* with LCO/TRO. A reasonable compromise (used in VM Prolog, for example) is to *restrict these primitives to work on named blocks only*. This permits the controlled use of these infrequently used constructs in the specific places where they are needed, without imposing general overheads.
+		
+	+
+		variable names. This feature is inessential in that it is *semantically* irrelevant, but it is a significant feature of the user interface to BNR Prolog. Unfortunately, it is also difficult to add to a WAM implementation without seriously affecting performance.
+
+In addition, a WAM implementation will impose a restriction on the maximum number of arguments to a predicate, and on the number of variables per clause.
+
+<#TableOfContents>
+
+### PROTOTYPE COMPILER
+
+A basic WAM clause compiler, based directly on [Warr-83], was constructed in about a week and comprised about six pages of BNR Prolog code. The modifications to support the BNR Prolog data structures and constraints were then added, with the final program requiring about eight pages. The source is included in Appendix A.
+
+The final form has three phases: the first converts a clause to a canonical form, the second classifies the variables, while the third does code emission. The emitted code is (for flexibility) currently in the form of a Prolog data structure, which is then written to an output file. (The first two phases can easily be combined if desired.)
+
+Specific features of the compiler deserve comment:
+
+1.. +
+		Argument registers were limited to 7, corresponding to (presumably) available machine data registers on a 68020, and this has been adequate for all files so far tested. In a real implementation, however, one would most likely increase the number of virtual registers to a suitably large number and map them to either machine registers or memory in a final pass.
+		
+	+
+		The optimizations which eliminate assignments between local variables by careful assignments of local variable names were done very simply using unification and constraints. An implementation without using constraints is possible, but much more awkward.
+		
+	+
+		Some reordering of argument testing is done, to handle constants and variables before structures. This appears to be usually a good strategy, but may be inappropriate in specific cases.
+		
+	+
+		A new opcode called !`neck`! was introduced corresponding to the position of ":-" in the clause. This opcode has the semantics of executing any constraints which may have been triggered by the head unifications; generally it would therefore be a noop. However, given its necessary presence for this purpose, it becomes possible to defer any "deep" unifications which might occur during head processing (by pushing them onto the unification stack) and do all these unifications together in neck before checking for constraints. This strategy is based on the notion that one should not do the deep unifications until the rest of the head checking (which might fail for trivial reasons) is complete, and reflects the fact that the setup for deep unifications is significant, especially when cyclic structures are being supported. Finally, !`neck`! is also necessary to switch modes in the hybrid coding scheme described below.
+		
+	+
+		Statically uncompilable calls (unbound variables, structures with a unbound principal functor, or indefinite arument lists) are converted to a calls of a run-time primitive !`call_i`! with the original call as single argument. The run-time primitive is responsible for checking that the necessary bindings have been made, and sets up the registers accordingly.
+		
+	+
+		The WAM architecture *requires* that unbound variables be encoded as self-pointers, which is different from the encoding presently being used in the interpreter. (Actually, WAM makes two distinct assumptions: 1. all object representations are assignable, and 2.variable chains point to their oldest representative; together these imply that the chains end at a self-reference.)
+		
+	+
+		BNR Prolog structures store principal functors as the first regular element in a sequence; the usual get/put_struc opcodes therefore naturally split into a simpler !`get/put-structure`! followed by an appropriate opcode for the principal functor, which may be of !`unify_cons`! or !`unify_var`! type.
+		
+	+
+		The standard WAM "unify" instructions in put sequences, which are always in writemode, have been replaced by corresponding !`push-`! instructions, but have the same semantics. This has been done to eliminate the "mode bit" from the state during body processing, and to facilitate the hybrid coding scheme discussed below.
+		
+	+
+		In the current interpreted system, "cdr-coded" lists are encoded as a sequence with a header (containing the length of the sequence), the list contents, followed by an "endof_sequence" mark. In the compiler version, the end-of-sequence mark has been omitted in all indefinite lists, i.e., those ending with a continuation (tail variable). This is a space optimization only, and could be retrofitted to the interpreter if desired.
+		
+	+
+		Also, for reasons of storage management, the header field has been removed from lists. Thus a list becomes encoded as a contiguous piece of memory, starting anywhere, and ending with either a continuation or an end-of-sequence mark. The reason for this change is that it is necessary to eliminate "garbage" being generated by the traversal of *existing* lists. For example, in the typical list recursion
+				f([X,Xs..], ... ) :- ... f(Xs, ... )
+		which coerces to
+				f([X,Xs..], ... ) :- ... f([Xs..], ... )
+		the [Xs..] on the RHS would currently be encoded as a 3-cell substructure containing:
+				[(list tag), 0] [ref to Xs] [end-of_seq].
+		Since all execution instances of calls to f would share this single data structure, it causes no storage problems in the interpreter. The use of the same coding technique in WAM, however, would produce a copy of this structure on the heap for each step of the list traversal. This rate of garbage production is unacceptable, and eliminating it requires that we no longer maintain lengths with lists. This also generally improves performance (by eliminating some code to check/create length fields ) but one loses the ability to check list lengths during unification, so some algorithms may actually become slower.
+
+		Since source coercions in BNR Prolog ensure that if a variable is ever used as a tail variable, it is always used as a tail variable, it is possible to store tail variable values temporarily in variables as naked (untyped) pointers (if desired), and to generate tags as either tail variables or as lists on !`tpush-`! instructions, depending on whether they occur in contexts like [X,Xs .. ] or like [Xs .. ] respectively. Alternatively, if tail variables are kept in typed form as tail variables, then the former context is simplified but the latter becomes more complex. Another option is to statically determine if all push contexts are of the same type, and store the pointer with the appropriate type thus simplifying all push instructions at the expense of adding additional input instructions.
+		
+		However, if we assume that the most frequent use of tailvariables is to express list recursions, then the commonest case is to get a tail variable and put a list, so it makes sense to store the pointer already tagged as a list. This optimization is therefore assumed below. It requires that opcodes which produce tail variables must set the tvtag bit (which changes the listtag into a tailvariable tag). Note that this preserves the BNR Prolog notion that [T..] represents any list, but not any *term*. The easiest way to implement this change in the compiler is to treat tailvariables as variables in contexts like [T..], i.e., according to the equivalence T=[T..] ; this allows standard var opcodes to apply to tailvariable registers in most cases, providing the register is already initialized.
+
+<#TableOfContents>
+
+### Examples
+
+With these optimizations, the code generated for the standard `append` clauses becomes:
+~~~ pseudocode
+% append([], L, L).
+
+	$get_nil$	D1
+	$get_val$	D2, D3
+	$neckproceed$
+
+% append([X,L1..], L, [X,L2..] ) :- append(L1,L,L2).
+
+	$get_list$	T4
+	$tunif_vart$	D1
+	$get_list$	D3
+	$unif_valt$	T4
+	$tunif_vart$	D3
+	$neck$
+	$exec$  append / 3
+~~~
+These differ from "standard WAM" only by the presence of the neck instruction and the use of special instructions for tail variables.
+
+A second example (taken from [Warr-83] , with minor correction) illustrates the handling of clause bodies. The source is a more-or-less typical example of a large-body clause with simple link variables:
+~~~ pseudocode
+compile(Clause,Instructions):-
+	preprocess(Clause,C1),
+	translate(C1,Symbols),
+	number_variables(Symbols,O,N,Saga),
+	complete saga(O,N,Saga),
+	allocate-registers(Saga),
+	generate(Symbols,Instructions).
+~~~
+The compiled code shows particularly the use of permanent variables and !`put_unsaf`!.
+~~~ pseudocode
+;compile( Clause, Instructions):-
+	$alloc$
+	$get varp$	P2,	D2
+	$neck$
+									; preprocess(_Clause,_C1)
+	$put_varp$	P5,	D2
+	$call$  preprocess / 2, 5
+									; translate(_C1,_Symbols)
+	$putunsaf$	P5,	D1
+	$put_varp$	P1,	D2
+	$call$  translate / 2, 4
+									; number_variables(_Symbols,O,_N,_Saga)
+	$put_valp$	P1,	Dl
+	$put_cons$	0,	D2
+	$put_varp$	P4,	D3
+	$put_varp$	P3,	D4
+	$call$  number_variables / 4, 4
+									; complete_saga(O,_N,_Saga)
+	$put_cons$	0,	Dl
+	$putunsaf$	P4,	D2
+	$put_valp$	P3,	D3
+	$call$  complete_saga / 3, 3
+									; allocate_registers(_Saga)
+	$putunsaf$ P3, Dl
+	$call$  allocate_registers / 1, 2
+									; generate(_Symbols,_Instructions)
+	$putunsaf$	P1,	D1
+	$put_valp$	P2,	D2
+	$dealloc$
+	$exec$  generate / 2
+~~~
+
+The next example, also from [1] , illustrates input decomposition:
+	d(U*V,X,DU*V + U*DV) :- d(U,X,DU), d(V,X,DV).
+The resulting code is longer than that of standard WAM because of the separate handling of functors and explicit !`end_seq`! instructions; conversely the opcodes are slightly simpler than in standard WAM. (Note that the !`put_valp`! instruction before the call is unnecessary, and could be omitted by a peephole optimizer.)
+~~~ pseudocode
+;\d((_U * _V), _X, ((_DU * _V) + (_U * _DV)))\ :-
+	$alloc$
+	$get_struc$	3,	D1
+	$unif_cons$	'`*`'
+	$unif_vart$	D1
+	$unif_varp$	P1
+	$end_seq$
+	$get_varp$	P2,	D2
+	$get_struc$	3,	D3
+	$unif_cons$	'+'
+	$unif_vart$	T1
+	$unif_vart$	T2
+	$end_seq$
+	$get_struc$	3,	T1
+	$unif_cons$	'`*`'
+	$unif_vart$	D3
+	$unif_valp$	P1
+	$end_seq$
+	$get_struc$	3,	T2
+	$unif_cons$	'`*`'
+	$unif_valt$	D1
+	$unif_varp$	P3
+	$end_seq$
+	$neck$
+										; d(_U, _X, _DU)
+	$put_valp$	P2, 02
+	$call$  d / 3, 3
+										; d(_V, _X, _DV)
+	$put_valp$	Pl, 01
+	$put_valp$	P2, 02
+	$put_valp$	P3, 03
+	$dealloc$
+	$exec$  d / 3
+~~~
+The next example illustrates the construction of terms; similar comments apply here as in the last example.
+~~~ pseudocode
+test:- do( parse( s(np,vp), [birds,fly], [])).
+
+;test():-
+	$neck$
+										; 'do'(parse(s(np,vp),[birds,fly],[]))
+	$put_struc$	3,	T1
+	$push_cons$	s
+	$push_cons$	np
+	$push_cons$	vp
+	$end_seq$
+	$put_list$	T2
+	$push_cons$	birds
+	$push_cons$	fly
+	$end_seq$
+	$put_struc$	4,	D1
+	$push_cons$	parse
+	$push_valt$	T1
+	$push_valt$	T2
+	$push_nil$
+	$end_seq$
+	$exec$  do / 1
+~~~
+As a final example, we illustrate the handling of tailvariables described above by considering a rather meaningless example which contains most of the cases:
+	f([_X,_T..],[_T..],[_Y,_T..]) :- g([_Z..],[b,_T..],[_T..]).
+	
+~~~ pseudocode
+;f([_X,_T..],[_T..],[_Y,_T..]) :-
+	$get_list$	D1
+	$unif_void$
+	$tunif_vart$	D4				% (store as list in D4)
+	$get_valt$	D4,	D2			% (unify *qua* lists)
+	$get_list$	D3
+	$unif_void$
+	$tunif_valt$	D4
+	$neck$
+										; g([_Z..],[b,_T..],[_T..])
+	$put_list$	D1
+	$tpush_void$
+	$put_list$	D2
+	$push_cons$	b
+	$tpush_valt$	D4				% put as tailvar
+	$put_valt$	D4,	D3			% put as list
+	$exec$  (g / 3)
+~~~
+Note that the tailvariable T is treated as a tailvariable on its first, third and fourth occurrences, while it is treated (by the compiler) as a variable on the second and fifth occurrences (marked), and as a list by the run-time system on these occurrences. The constructor [_Z..], however, is processed explicitly.
+
+<#TableOfContents>
+
+### Compiler Verification
+
+Since what is compiled represents (logically) just copying plus unification, there is for Prolog a simple way to *verify partial correctness of the compiler implementation independent of the rest of the system implementation*. This is done by providing a highlevel implementation of the opcodes which maps them back into unification so as to recreate the original clause in canonical form. The Prolog code for doing verification is included in Appendix B. Errors in the compilation of a single clause (improper register assignment, wrong opcode order, missing opcode, wrong choice of opcode) result in the reconstructed clause not being a variant (up to variable renaming) of the original. Errors involving runtime details or multiple clause executions (handling unsafe variables, memory management errors, errors during call) will not be discovered by this technique.
+
+Note that this same technique can also be used to implement the `clause` predicate. This is important because `clause` would otherwise require that a copy of the original source be maintained in parallel with the compiled clause. This technique allows one in prinicple to change the WAM opcode interpreter to one which rebuilds the original clause (in "canonical form"). This only works readily if the clause is stored essentially as WAM codes and not fully compiled to native machine instructions.
+
+<#TableOfContents>
+
+### SEMANTICS
+
+To specify the semantics of the opcodes, we use state variables in the form of address registers similar to standard WAM and introduce a compact notation for certain common code sequences. The state variables needed for this are:
+.tsv
+	!`pc`!	program counter
+	!`e`!	current environment (stack pointer)
+	!`cp`!	continuation pointer
+	!`hp`!	pointer to the top of the heap
+	!`sp`!	scratch structure pointer, used to point to input structures
+
+In addition, there is a boolean state variable called !`writemode`!.
+
+Other state variables (trail, lastchoice, current_task. .. ) are not discussed here.
+
+References to permanent variables are via offsets from !`e`!, and are indicated explicitly as !`e`!(offset). For purposes of simplicity, all temporary registers are regarded as directly referenceable registers/memory locations without specifying which.
+
+The notation used is:
+.tsv
+	!`a := b`!	assignment, value of a becomes the value of b			move.l (b),(a)
+	!`a :=#b`!	immediate assignment, value of a becomes b				move.l #b,(a)
+	!`a <- b`!	push value of b onto a									move.l (b),(a)+
+	!`a <-#b`!	push immediate											move.l #b,(a)+
+	!`a -> b`!	pop top value of a into b								move.l (a)+,(b)
+	!`a => b`!	compare value of a (autoincrement) with value of b		cmp.l (a)+,(b)
+	!`a =>#b`!	compare immediate with autoincrement					cmp.l (a+), #b
+
+The last column gives typical assembler equivalents; note that each corresponds to a single instruction, except the last two where there is an implicit branch to the FAIL state. (Note that all instructions which do tests and can fail (e.g. writemode) are implicitly followed by branches to the FAIL.
+
+In addition | is used to represent bitwise "or" and ~ to represent bitwise "but-not" for setting/clearing tag bits.
+	p --> q ; r - if p then q else r
+With the help of these conventions and some primitive operations to do unifications and variable bindings, the semantics of the opcodes can be summarized compactly as follows:
+~~~ pseudocode
+%	control
+
+% Note: this assumes that choicepoints are kept on separate stack. (See [Mar-89])
+
+% Note: basic stack frame is \[ !`cp`!, !`ce`!, perm_vars..] ; no frame is required for leaf procedures.
+
+!`call`! f/arity , size :-
+
+% The functor name/arity must be translated to the address of the first clause which becomes !`pc`!;
+% if more than one clause is possible then a choicepoint will need to be created to save the system
+% registers (!`e`!, !`hp`!, !`trail`!) and argument registers (number depends on arity). Set !`cp`! to
+% point at return address.
+
+!`exec`! f/arity :- Same as call, but does not set !`cp`!.
+
+!`alloc :- ce := e, e:= ce`! + env_size(!`cp`!), !`e <- cp`!, !`e <- ce`!.
+	(i.e., !`cp`! points to the environment size parameter on the call).
+
+!`dealloc :- e -> ce, e -> cp`!.
+!`proceed :- pc := cp`!.
+
+
+%	input data transfer opcodes
+
+!`get cons`!(C,R)	:- deref(R,Val,T),
+         (T=var) --> bind(Val,C); Val@=C.
+!`get nil`!(R)		:- deref(R,Val,T),
+         (T = var) --> bind(Val,[])
+        ;(T = list) --> Val=[].
+!`get varp`!(P,R)	:- !`e`!(P) := R.
+!`get-vart`!(P,R)	:- P := R.
+!`get-valp`!(P,R)	:- unify(!`e`!(P),R).
+!`get-valt`!(P,R)	:- unify(P,R).
+!`get-list`!(R)	:- deref(R,Val,T),
+         (T = var) --> \[bind( Val,!`hp`!), writemode :=1]
+        ;(T =list) --> \[!`sp`!:=# Val, writemode:=O].
+!`get struc`!(N,R)	:- deref(R,Val,T),
+         (T= struc) --> \[!`sp`!:=# Val, checkarity(N,!`sp`!), writemode:=O]
+        ;(T= var) --> \[bind( Val,!`hp`!), !`hp`! <-# f/N,writemode:=1].
+
+
+%	unify opcodes/ writemode
+
+!`unif_cons`!(C)	:- writemode, !`hp`! <-# C.
+!`unif_valt`!(T)	:- writemode, !`hp`! <- T.
+!`unif_vart`!(T)	:- writemode, T := !`hp`!, !`hp`! <- !`hp`!.
+!`unif_valp`!(P)	:- writemode, !`hp`! <- !`e`!(P).
+!`unif_varp`!(P)	:- writemode, !`e`!(P) := !`hp`!, !`hp`! <- !`hp`!.
+!`unif_void`!(P)	:- writemode, !`hp`! <- !`hp`!.
+!`tunif_valt`!(T)	:- writemode, T := listtag|T, !`hp`! <- tvtag|T.
+!`tunif_vart`!(T)	:- writemode, T := listtag|T, !`hp`! <- tvtag|T.
+!`tunif_valp`!(P)	:- writemode, !`hp`! <- tvtag|P.
+!`tunif_varp`!(P)	:- writemode, p := listtag|P, !`hp`! <- tvtag|P.
+!`tunif_void`!		:- writemode, !`hp`! <- tvtag|!`hp`!.
+!`end_seq`! 		:- writemode, !`hp`! <-# 0.
+
+
+%	unify opcodes/ readmode
+
+% Note: handling of tailvariables in input seq not explicitly covered
+%	if sp points to an unbound tailvariable
+%	then [set sp to be hp, set writemode, finish current ins]
+
+!`unif_cons`!(C)	:- !`sp`! =># C.
+!`unif_valt`!(T)	:- !`sp`! => Temp, unify(Temp,T).
+!`unif_vart`!(T)	:- !`sp`! => T.
+!`unif_valp`!(P)	:- !`sp`! => Temp, unify(Temp,!`e`!(P)).
+!`unif_varp`!(P)	:- !`sp`! => !`e`!(P).
+!`unif_void`!(P)	:- !`sp`! => # _.		%(skip)
+!`tunif_valt`!(T)	:- unify(T,listtag|!`sp`!) .
+!`tunif_vart`!(T)	:- T := listtag|!`sp`!.
+!`tunif_valp`!(P)	:- unify(!`e`!(P),listtag|!`sp`!) .
+!`tunif_varp`!(P)	:- e(P) := listtag|sp.
+!`tunif_void`!		:- !`sp`! =># _.		% skip
+!`end_seq`!		:- !`sp`! =># 0.
+
+
+%	output data transfer opcodes
+
+!`put_cons`!(C,R)	:- R :=# C.
+!`put_varp`!(P,R)	:- addr(!`e`!(P),V), R:=# V, !`e`!(P) :=# V.
+!`put_vart`!(P,R)	:- R :=# P, P :=# P.
+!`put_valp`!(P,R)	:- R := P.
+!`put_valt`!(P,R)	:- R := P.
+!`putunsaf`!(P,R)	:- safe(!`e`!(P),S), R :=# S.
+!`put_struc`!(N,R)	:- R := !`hp`!, !`hp`! <-# func/N.
+!`put_list`!(R)	:- R := listtag|hp.
+!`put_nil`!(R)		:- R :=# [].
+!`put_void`!(R)	:- R := !`hp`!, !`hp`! <- !`hp`!.
+
+
+%	term constructors
+
+!`push_cons`!(C)	:- !`hp`! <-# C.
+!`push_valt`!(T)	:- !`hp`! <- T.
+!`push_vart`!(T)	:- T := !`hp`!, !`hp`! <- !`hp`!.
+!`push_valp`!(P)	:- !`hp`! <- !`e`!(P).
+!`push_varp`!(P)	:- !`e`!(P) := !`hp`!, !`hp`! <- !`hp`!.
+!`push_end`!		:- !`hp`! <-# 0.
+!`push_nil`!		:- !`hp`! <-# [].
+!`tpush_valt`!(T)	:- !`hp`! <- tvtag|T.
+!`tpush_vart`!(T)	:- T := tvtag|!`hp`!, !`hp`! <- T.
+!`tpush_valp`!(P)	:- !`hp`! <- tvtag|P.
+!`tpush_varp`!(P)	:- !`e`!(P) := tvtag|!`hp`!, !`hp`! <- !`e`!(P).
+!`tpush_void`!		:- !`hp`! <- tvtag|!`hp`!.
+~~~
+
+<#TableOfContents>
+
+### ENCODING DETAILS
+
+#### DATA STRUCTURES
+
+The WAM codes suggest a coding scheme for data structures which is somewhat different from that presently used. This section offers a suggested coding scheme for 68K-style architecture, assuming that all address bits are functional, and optimizing the compiler code to the exclusion of other criteria.
+
+The fundamental unit of data structure is the 4-byte cell (long-word aligned). The sign bit is used to divide the possible values into those requiring simple dereferencing (variables, structures ) and all others; these in turn are sub-classed ( by bits # 30 and #29) into lists, tailvariables, and scalar types ( symbol, integer, float, interval, bucket). The essential points here are that (a) variables are just direct pointers (no tag bits to clear), (b) structure references are treated the same as variables, and (c) list references and tail variables are also just pointers, but must be tagged (differently) to distinguish them from variables and structures. The actual details of encoding scalar types is largely irrelevant so far as the compiler is concerned, but a possible coding scheme is given below (showing the highorder byte of the cell). Note that this scheme will leaves fewer bits available for integers and floating point values.
+
+.tsv
+	var					`00-- ----`
+	struc (ref)			`00-- ----`
+	list				`100- ----`
+	tailvar				`101- ----`
+	integer				`1100 ----`   (28 bit integers and floats)
+	interval			`1110 0---`
+	symbol				`1110 1---`
+	bucket				`1111 0---`
+	structure (hdr)		`1111 1---`
+
+#### OPCODE ENCODING
+
+WAM implementations are generally based on either native code or bytecodes. The latter strategy is favored on small machines with limited memory or when portability across platforms is a key issue. The former strategy is generally employed on high-end, single-platform products where performance is the salient criterion.
+
+Most WAM opcodes can be coded as one or two bytecodes, given restrictions on the number of arguments and number of variables ( which allow for a register argument to encoded in the main bytecode). There is a consequent loss of performance, since the bytecode interpreter loop overhead contains as many or more instructions as many of the bytecodes themselves. In addition, the bytecode fetching costs more memory operations and does not benefit from any hardware prefetch/cache capabilities.
+
+Pure native code implementations avoid the bytecode interpreter overheads and can take advantage of machine instruction fetch optimizations, but result in substantial code expansion since some opcodes can require (under some conditions) many (>10) machine instructions. One hybrid approach is to emit only the difficult cases of the largest opcodes as subroutine calls; this allows for native code implementation of most simple cases with
+code expansion limited to about 10-20 times that of byte code implementations.
+
+#### Hybrid Coding
+
+Inspection of Appendix D indicates that most of the opcodes appearing in the body of clauses (except for the handling of unsafe variables) are quite short, one or two machine instructions. The difficult opcodes are essentially those that appear in the head of the clause. This suggests a different hybrid strategy, one where the heads of clauses are interpreted bytecodes while the body is emitted as native code. The call operations then serve to transfer control from direct execution into interpretive mode, while the "neck" instruction transfers control back to direct execution. This strategy should give a good intermediate position, almost as fast as pure native implementation but with code sizes similar to that of the current interpreter.
+
+A possible set of byte-codes for encoding clause heads is specified in the following table. These are based on the use of 7 argument registers, with limits of 256 temporary variables and 256 permanent variables per clause. With this coding, most clause heads will consist of single byte instructions except for operations involving constants or substructures.
+
+
+`			`**Possible Coding of Head Instructions**
+
+`		`miscellaneous instructions
+.tsv
+	!`neck`!			`0000 0000`
+	!`unify_void`!		`0000 0001`
+	!`tunify_void`!		`0000 0010`
+	!`end_of_seq`!		`0000 0011`
+	!`unif_cons`!		`0000 0100`
+	!`alloc`!			`0000 0101   `(length of environment follows as next word)
+	!`unif_void`!		`0000 0110`
+	!`neck_proceed`!	`0000 0111`
+
+`		`get instructions
+(`src*`- register D1-D7; if zero then the next byte is used as index into temporary area)
+.tsv
+	!`get_cons`!		`0000 1   | src   `(constant follows as next longword)
+	!`get_struc`!		`0001 b/w | src   `(arity follows as next byte/word)
+	!`get_list`!		`0010 0   | src`
+	!`get_nil`!			`0010 1   | src`
+	!`get_val`!			`0011 p/t | src   `(`p/t` + next byte specifies destination)
+
+`		`unify instructions
+(p/t - denotes permanent versus temporary; if src=O then use next byte)
+.tsv
+	!`unify_var`!		`0100 p/t | src`
+	!`unify_val`!		`0101 p/t | src`
+	!`tunify_var`!		`0110 p/t | src`
+	!`tunify_val`!		`0111 p/t | src`
+
+`		`get_var instructions
+(`src` and `dst` are 3-bit fields as above, with 0 indicating values in subsequent bytes;
+`p/t` indicates whether dest field is temporary or permanent)
+.tsv
+	!`get_var`!			`1 p/t dst src*`
+
+As an example, we will consider the encoding of append given earlier (with the first seven temporary variables mapped to data registers D1-D7 ):
+~~~pseudocode
+%append([],L,L).
+
+!`29		get_nil`! D1
+!`3203	get_val`! D2, D3
+!`07		neckproceed`!
+
+% append([X,L1..],L,[X,L2..]) :- append(L1,L,L2).
+
+!`21		get_list`! D1
+!`44		unify_vart`! D4
+!`61		tunify vart`! D1
+!`23		get_list`! D3
+!`54		unify_valt`! D4
+!`63		tunify_vart`! D3
+!`00		neck`!
+!`??		exec`! append/3
+~~~
+
+(Note that these clauses are mostly head.) These should be compared with the current storage costs in the interpreter, which are 24 bytes and 80 bytes respectively (not counting clause linkages or symbol costs in either case).
+
+<#TableOfContents>
+
+### PERFORMANCE ESTIMATE
+
+It is well-known that compilation improves the performance of some predicates or programs much more than others; in general recursions (especially deterministic ones) involving simple data structures are affected much more than predicates which use backtracking extensively or which involve complex data structures. In particular, the use of naive reverse as a benchmark for measuring compilation benefits is highly skewed (by as much as an order of magnitude). However, since the naive reverse benchmark is traditionally the one used and comparisons between different compilations of naive reverse have some validity (even if they do not predict very well for other programs), we will try to estimate performance of naive reverse using this compilation strategy.
+
+The cost of running naive reverse is composed almost entirely of calls to deterministic append, the code for which was given earlier. The critical execution sequence, assuming first parameter indexing able to distinguish between nil-lists and non-nil lists, is the second clause, eight instructions. Not counting bytecode interpreter overheads, four of these can be implemented as two or fewer machine instructions, while !`get_list`! might take four instructions (in this context) , giving a total of 16 or fewer instructions, not counting !`exec`!. If we allow three instructions per microsecond (since these are register instructions) we get a rough estimate of 5 microseconds of actual work per lip, or an upper bound of some 200Klips. (This is about what BIM claims for naive reverse; recall that they use statically native code which is essentially identical to ours.) If indirect linkages are used for procedure calls or general indexing techniques are included this figure can quickly decrease to about half this, say 100Klips (comparable to Quintus). Byte coding may reduce this-to about 60Klips, which is still about an order of magnitude faster than our current interpreter.
+
+This analysis, rough as it is, should indicate how inordinately sensitive naive reverse is to details not just of the compilation process but of the total context. It also suggests that we should not expect more than an order of magnitude speedup even in highly favorable circumstances. Applications depending heavily on Pascal primitives (such as state space access or I/O routines) or backtracking will show much less improvement.
+
+<#TableOfContents>
+
+### BIBLIOGRAPHY
+
+[Warr-83] David H. D. Warren, An Abstract Prolog Instruction Set, SRI Technical Note 309, October, 1983, SRI International, Menlo Park, Ca.
+
+[Mar-89] A. Marien and B. Demoen, On the Management of Choicepoint and Environment Frames in the WAM, Proceedings of the North American Logic Programming Conference, 1989, MIT Press, cambridge, Mass.
+
+### APPENDIX A: COMPILER SOURCE
+@include WAMcompilerAppA.txt
+
+<#TableOfContents>
+
+### APPENDIX B: COMPILER VERIFICATION
+@include WAMcompilerAppB.txt
+
+<#TableOfContents>
+
+
+&
+	@import ../MyWordDocStyle.mmk
+	@import 
+		/BNRProlog-Papers/myword/pkgs/box.mmk 
+		/BNRProlog-Papers/myword/pkgs/tsv.mmk
+		/BNRProlog-Papers/myword/pkgs/toc.mmk
+	.TOC .. <- toc 3 3
+	centreblock> .. <- <div class=_centre>
+	!` .. `! <- <span class='language-prolog'> text
+	>> .. <- <div class=my_hanging> prose
+	// for pseudocode blocks, define '$ .. $' for opcodes, disable '_ .. _' (var names)
+	pseudocode .. <- <pre class=my_pseudo> prose
+	$ .. $ <- <b>
+	_ .. _ <-
+	\[ <- is [
+	@css
+		._centre {text-align: center;}
+		.language-prolog {font:1.2em monospace; font-weight:bold}
+		.my_hanging {padding-left:40px; text-indent:-20px}
+		pre.my_pseudo {line-height:1.1em}

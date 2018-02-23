@@ -1,0 +1,199 @@
+%
+%
+% This file emulates the Wam opcodes produced by the compiler
+% and tries to reconstruct the original source (in normal form)
+% (Success is a necessary but not sufficient test for correctness.)
+%
+% Jan 10 1990
+
+% modified Feb 6 : support tailvar optimizations, no args on
+% unif_void,etc.
+% added opcode: ecut
+$member(X,[X,_..]).
+$member(X,[_,Xs..]):-$member(X,Xs).
+
+$replace(F, [], [F,_..]):-!.
+$replace(F(A,B), [F(A,C), Xs..], [F(A,B), Xs..]):-!.
+$replace(F, [X,Xs..], [X,Ys..]) :-$replace(F,Xs,Ys).
+
+%
+% state access utilities
+%
+% state is: [name, registers, temps, perms, input-regs, heap]
+reg('D1').
+reg('D2').
+reg('D3').
+reg('D4').
+reg('D5').
+reg('D6').
+reg('D7').
+
+$new state(Name, [Name, RL,[_..],[_..],RL,Heap]):-
+     findall( reg(R,X), reg(R), RL).
+
+heaplist([N,R,T,P,I,_],[H..],[N,R,T,P,I,H]).
+
+heapstruc([N,R,T,P,I,_],F(H..),[N,R,T,P,I,V]):- {nonvar(V)-> V=F(H..)}.
+
+pushheap( F, [N,R,T,P,I,V]):-var(V),! ,V=F(H..).
+pushheap( C, [N,R,T,P,I,H]):- termlength(H,_,[C,_..]).
+
+pushheaptail([TV..], [N,R,T,P,I,H]):-termlength(H,_,TV).
+
+endseq( [N,R,T,P,I,H]) :- termlength(H,_, []).
+
+dump ( [] ).
+dump( [F(T,V),Xs..]) :- write(T=V,' '), dump(Xs).
+
+prstate([N,R,T,P,_,H]):-nl, dump(R),nl,dump(T),nl,dump(P),nl,
+     write(H),nl.
+proc_name(( F(A..):-_),F/N) :-termlength(A,N,[]).
+
+in( reg(A,B)  ,[N,R,T,P,I,H]) :-$member( reg(A,B),R),!.
+in( temp(A,B) ,S) :- reg(A),!, in(reg(A,B),S).
+in( temp(A,B) ,[N,R,T,P,I,H]) :-$member( temp(A,B),T),!.
+in( perm(A,B) ,[N,R,T,P,I,H]) :-$member( perm(A,B),P),!.
+set( reg(A,B) , [N,R,T,P,I,H], [N,R1,T,P,I,H]):-
+     $replace(reg(A,B),R, R1),!.
+set( temp(A,B), S, S1):- reg(A),!, set(reg(A,B), S,S1).
+set( temp(A,B), [N,R,T,P,I,H],[N,R,T1,P,I,H]):-
+     $replace( temp(A,B),T,T1),!.
+set( perm(A,B), [N,R,T,P,I,H],[N,R,T,P1,I,H]):-
+     $replace( perm(A,B),P,P1),!.
+
+inp( reg(A,B) , [_,R,T,P,I,H]):-reg(A),!,
+     $member(reg(A,B),R),$member( reg(A,B),I),!.
+inp( temp(A,B) ,[_,R,T,P,I,H]):-reg(A),!,
+     $member(reg(A,B),R),$member( reg(A,B),I),!.
+inp( reg(A,B),S):- in(temp(A,B),S).
+inp( temp(A,B),S):- in(temp(A,B),S).
+
+get_input([Nm/N,R,T,P,In,H], Nm( A..)):- $get regs(N,In,A).
+get_regs([_,R,T,P,I,H],N,Args):- $get_regs(N,R,Args).
+$get_regs(0,_,[]):-!.
+$get_regs(N,[reg(_,A),Rs..], [A,As..]) :- successor(N1,N),
+     $get_regs(N1,Rs,As).
+%
+%            emulation
+%
+emulation( [], State, []):-!.
+emulation( [X,Xs..], State, Output):- trv->[nl, write('    ',X),nl],
+     emulate(X, State,State1, Output, Output1),!,
+     trv -> not(not(prstate(State1))),
+     emulation( Xs, State1, Output1).
+
+emulate( [], S, S, X,X) :-!.
+emulate( [C,Cs..] , S, S2,X,Y) :- !, trv->[nl, write(' ',C),nl],
+     emulate( C, S, S1, X,X1), !, trv -> not(not(prstate(S1))),
+     emulate( Cs, S1, S2, X1,Y).
+emulate( C,S,S,X,X) :- noop(C),!. %discard no-ops
+emulate( C,S,S1,X,X) :- noncall(C,S,S1),!.
+emulate( cut, S,S, [!,R..], R):-!.
+emulate( cutreturn, S,S, [!], [] ):-!.
+emulate( call( call_i/1, _), S,S, [call_i(Arg),Rest..], Rest):-!,
+     get_regs(S,1,[Arg1]).
+emulate( call ( F/N, _), S,S, [F(Args..),Rest..], Rest):-!,
+     get_regs(S,N,Args).
+emulate( ecut, S,S, [!,Rest..], Rest):-! .
+emulate( exec(F/N), S,S, [F(Args..),Rest..], Rest):-!,
+     get_regs(S,N,Args).
+emulate( neck, S,S, [H,Rest..], Rest):-!, get_input(S, H).
+emulate( U,S,S,X,X):- nl, write(' dont know', U).
+
+%
+%            semantics
+%
+%
+noop( alloc ) .
+noop( dealloc ) .
+noop( proceed ) .
+noop( comment(_..)).
+noop( hcomment(_..)).
+
+noncall( get_cons(C,R) , S, S ):- inp( reg(R,C), S).
+noncall( get_varp(P,R), S, S1) :- inp( reg(R,V),S),
+     set( perm(P,V), S, S1).
+noncall( get_vart(P,R), S, S1) :- inp( reg(R,V),S),
+     set( temp(P,V), S,S1).
+noncall( get_valp(P,R), S, S)  :- inp( reg(R,V),S),in( perm(P,V), S).
+noncall( get_valt(P,R), S, S)  :- inp( reg(R,V),S),in( temp(P,V), S).
+noncall( get_struc(_,R),S, S1) :- heapstruc(S,H,S1),
+     inp( temp(R,H),S1).
+noncall( get_list(R)   ,S, S1) :- heaplist(S,H,S1),
+     inp( temp(R,H),S1).
+noncall( get_nil(R),    S, S)  :- inp( reg(R,[]),S).
+noncall( unif_cons(C),  S, S ) :- pushheap(C,S).
+noncall( unif_valt(T),  S, S ) :- in( temp( T,V),S),  pushheap(V,S).
+noncall( unif_vart(T),  S, S1) :- set(temp(T,V),S,S1),pushheap(V,Sl).
+noncall( unif_valp(P),  S, S ) :- in( perm(P,V),S),   pushheap(V,S).
+noncall( unif_varp(P),  S, S1) :- set(perm(P,V),S,S1),pushheap(V,S1).
+noncall( unif_void,     S, S)  :- pushheap(Void,S).
+noncall( end_seq,       S, S)  :- endseq(S).
+noncall( tunif_valt(T), S, S)  :- in( temp( T,V),S),
+     pushheaptail(V,S).
+noncall( tunif_vart(T), S, S1) :- set(temp(T,V),S,Sl),
+     pushheaptail(V,S1).
+noncall( tunif_valp(P), S, S)  :- in( perm(P,V),S),
+     pushheaptail(V,S).
+noncall( tunif_varp(P), S, S1) :- set(perm(P,V),S,S1),
+     pushheaptail(V,S1).
+noncall( tunif_void,    S, S ) :- pushheaptail(Void,S).
+noncall( put_cons(C,R), S, S1) :- set( temp(R,C), S,S1).
+noncall( put_varp(P,R), S, S2) :- set(perm(P,V), S,S1),
+     set( temp(R,V),S1, S2).
+noncall( put_vart(P,R), S, S2) :- set(temp(P,V), S,S1),
+     set( temp(R,V),S1, S2).
+noncall( put_valp(P,R), S, S1) :- in( perm(P,V), S),
+     set( temp(R,V),S, S1).
+noncall( put_valt(P,R), S, S1) :- in( temp(P,V), S),
+     set( temp(R,V),S, S1).
+noncall( putunsaf(P,R), S, S1) :- in( perm(P,V), S),
+     set( temp(R,V),S, S1).
+noncall( put_struc(_,R),S, S2) :- heapstruc(S,H,S1),
+     set( temp(R,H),S1,S1).
+noncall( put_list(R),   S, S2) :- heaplist(S,H,S1),
+     set( temp(R,H),S1,S2).
+noncall( put_nil(R),    S, S1) :- set( temp(R,[]), S, S1).
+noncall( put_void(R),   S, S1) :- set( temp(R,Void), S, S1).
+
+
+noncall( push_cons(C),  S, S)  :- pushheap(C,S).
+noncall( push_valt(T),  S, S)  :- in( temp(T,V),S),   pushheap(V,S).
+noncall( push_vart(T),  S, S1) :- set(temp(T,V),S,S1),pushheap(V,S1).
+noncall( push_valp(P),  S, S)  :- in( perm(P,V),S),   pushheap(V,S).
+noncall( push_varp(P),  S, S1) :- set(perm(P,V),S,S1),pushheap(V,S1).
+noncall( push_void,     S, S)  :- pushheap(Void,S).
+noncall( tpush_valt(T), S, S)  :- in( temp(T,V),S),
+     pushheaptail(V,S).
+noncall( tpush_vart(T), S, S1) :- set(temp(T,V),S,S1),
+     pushheaptail(V,S1).
+noncall( tpush_valp(P), S, S)  :- in( perm(P,V),S),
+     pushheaptail(V,S).
+noncall( tpush_varp(P), S, S1) :- set (perm (P, V), S, S1),
+     pushheaptail(V,S1).
+noncall( tpush_void,    S, S)  :- pushheaptail(Void,S).
+noncall( push_end,      S, S)  :- endseq(S).
+
+
+%
+%               mainline
+%
+
+equiv(X,Y):- subsumes(X,Y), subsumes(Y,X).
+
+vcl(F):- stdform(F,SF), proc name(SF,Name),
+     compile_clause(SF,C),!,
+     $new state(Name,St),
+     emulation(C,St, [Hd,Out..]) ,
+     trv -> [nl, portray( Hd:-Out)],
+     not(equiv(SF, (Hd:-Out)))
+          -> [ nl, portray(SF), nl, portray( Hd:-Out ),nl,fail].
+
+
+vf( Filename ) :-symbol(Filename),
+     nl, T1 is cputime,
+     foreach( mreadfile(Filename, Term) do
+          [vcl(Term) ->write('.') ; write('*')]
+     ),
+     T2 is cputime, DT is T2 - T1,
+     nl, write( time= DT).
