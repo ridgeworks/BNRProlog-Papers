@@ -103,10 +103,7 @@ The memory model influences the design in various ways. The size of available me
 
 ### BNR PROLOG LANGUAGE EXTENSIONS
 
-The approach taken here is to start with a basic W AM clause compiler for standard Prolog
-and then add features needed to support the BNR Prolog language extensions; language
-extensions which are inconsistent with the basic W AM approach will generate restrictions
-on what can be compiled and the nature of the conflict will be catalogued.
+The approach taken here is to start with a basic WAM clause compiler for standard Prolog and then add features needed to support the BNR Prolog language extensions; language extensions which are inconsistent with the basic WAM approach will generate restrictions on what can be compiled and the nature of the conflict will be catalogued.
 
 The language extensions to be dealt with can be classified into five groups:
 
@@ -152,7 +149,7 @@ Specific features of the compiler deserve comment:
 		A new opcode called !`neck`! was introduced corresponding to the position of ":-" in the clause. This opcode has the semantics of executing any constraints which may have been triggered by the head unifications; generally it would therefore be a noop. However, given its necessary presence for this purpose, it becomes possible to defer any "deep" unifications which might occur during head processing (by pushing them onto the unification stack) and do all these unifications together in neck before checking for constraints. This strategy is based on the notion that one should not do the deep unifications until the rest of the head checking (which might fail for trivial reasons) is complete, and reflects the fact that the setup for deep unifications is significant, especially when cyclic structures are being supported. Finally, !`neck`! is also necessary to switch modes in the hybrid coding scheme described below.
 		
 	+
-		Statically uncompilable calls (unbound variables, structures with a unbound principal functor, or indefinite arument lists) are converted to a calls of a run-time primitive !`call_i`! with the original call as single argument. The run-time primitive is responsible for checking that the necessary bindings have been made, and sets up the registers accordingly.
+		Statically uncompilable calls (unbound variables, structures with a unbound principal functor, or indefinite argument lists) are converted to a calls of a run-time primitive !`call_i`! with the original call as a single argument. The run-time primitive is responsible for checking that the necessary bindings have been made, and sets up the registers accordingly.
 		
 	+
 		The WAM architecture *requires* that unbound variables be encoded as self-pointers, which is different from the encoding presently being used in the interpreter. (Actually, WAM makes two distinct assumptions: 1. all object representations are assignable, and 2.variable chains point to their oldest representative; together these imply that the chains end at a self-reference.)
@@ -361,13 +358,13 @@ References to permanent variables are via offsets from !`e`!, and are indicated 
 
 The notation used is:
 .tsv
-	!`a := b`!	assignment, value of a becomes the value of b			move.l (b),(a)
-	!`a :=#b`!	immediate assignment, value of a becomes b				move.l #b,(a)
-	!`a <- b`!	push value of b onto a									move.l (b),(a)+
-	!`a <-#b`!	push immediate											move.l #b,(a)+
-	!`a -> b`!	pop top value of a into b								move.l (a)+,(b)
-	!`a => b`!	compare value of a (autoincrement) with value of b		cmp.l (a)+,(b)
-	!`a =>#b`!	compare immediate with autoincrement					cmp.l (a+), #b
+	!`a := b`!	assignment, value of a becomes the value of b			`move.l (b),(a)`
+	!`a :=#b`!	immediate assignment, value of a becomes b				`move.l #b,(a)`
+	!`a <- b`!	push value of b onto a									`move.l (b),(a)+`
+	!`a <-#b`!	push immediate											`move.l #b,(a)+`
+	!`a -> b`!	pop top value of a into b								`move.l (a)+,(b)`
+	!`a => b`!	compare value of a (autoincrement) with value of b		`cmp.l (a)+,(b)`
+	!`a =>#b`!	compare immediate with autoincrement					`cmp.l (a+), #b`
 
 The last column gives typical assembler equivalents; note that each corresponds to a single instruction, except the last two where there is an implicit branch to the FAIL state. (Note that all instructions which do tests and can fail (e.g. writemode) are implicitly followed by branches to the FAIL.
 
@@ -390,28 +387,28 @@ With the help of these conventions and some primitive operations to do unificati
 
 !`exec`! f/arity :- Same as call, but does not set !`cp`!.
 
-!`alloc :- ce := e, e:= ce`! + env_size(!`cp`!), !`e <- cp`!, !`e <- ce`!.
+!`alloc`! :- !`ce := e, e:= ce`! + env_size(!`cp`!), !`e <- cp`!, !`e <- ce`!.
 	(i.e., !`cp`! points to the environment size parameter on the call).
 
-!`dealloc :- e -> ce, e -> cp`!.
-!`proceed :- pc := cp`!.
+!`dealloc`! :- !`e -> ce, e -> cp`!.
+!`proceed`! :- !`pc := cp`!.
 
 
 %	input data transfer opcodes
 
-!`get cons`!(C,R)	:- deref(R,Val,T),
+!`get_cons`!(C,R)	:- deref(R,Val,T),
          (T=var) --> bind(Val,C); Val@=C.
-!`get nil`!(R)		:- deref(R,Val,T),
+!`get_nil`!(R)		:- deref(R,Val,T),
          (T = var) --> bind(Val,[])
         ;(T = list) --> Val=[].
-!`get varp`!(P,R)	:- !`e`!(P) := R.
-!`get-vart`!(P,R)	:- P := R.
-!`get-valp`!(P,R)	:- unify(!`e`!(P),R).
-!`get-valt`!(P,R)	:- unify(P,R).
-!`get-list`!(R)	:- deref(R,Val,T),
+!`get_varp`!(P,R)	:- !`e`!(P) := R.
+!`get_vart`!(P,R)	:- P := R.
+!`get_valp`!(P,R)	:- unify(!`e`!(P),R).
+!`get_valt`!(P,R)	:- unify(P,R).
+!`get_list`!(R)	:- deref(R,Val,T),
          (T = var) --> \[bind( Val,!`hp`!), writemode :=1]
         ;(T =list) --> \[!`sp`!:=# Val, writemode:=O].
-!`get struc`!(N,R)	:- deref(R,Val,T),
+!`get_struc`!(N,R)	:- deref(R,Val,T),
          (T= struc) --> \[!`sp`!:=# Val, checkarity(N,!`sp`!), writemode:=O]
         ;(T= var) --> \[bind( Val,!`hp`!), !`hp`! <-# f/N,writemode:=1].
 
