@@ -40,7 +40,7 @@ Every effort has been made to make this description complete (but it necessarily
 	centreblock .. <- <div class=_centre>
 	@css
 		._centre {text-align: center;}
-		
+	
 	`| .. |` <- <span class=form>
 	^ .. ^ <- <sup>
 	/\     <- &and;

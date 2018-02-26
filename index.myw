@@ -1,4 +1,4 @@
-**Preliminary**
+**Under Construction**
 
 BNR Prolog was a research project of the Computing Research Lab of Bell Northern Research between 1988 and 1995.
 
@@ -37,9 +37,8 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 **Related Research**
 1..
 	- [Solving linear, min and max constraint systems using CLP based on relational interval arithmetic], Pierre Girodias, Eduard Cerny, William J. Older, Theoretical Computer Science, Vol. 173, Iss. 1, February 1997
-
-
-
+	
+	- [CLP(F) and Constrained ODEs], Timothy J Hickey, Brandeis University, Proceedings of the Workshop on Constraint Languages and their use in Problem Modelling, 1994
 ---
 &
 	[Inside BNR Prolog] <- link docs/Inside_BNRP/WendezVousWithWAMA.html
@@ -56,3 +55,4 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	[Operator Precedence Grammars] <- link docs/OpPrecedenceGrammars/OpPrecedenceGrammars.html
 	[Solving linear, min and max constraint systems using CLP based on relational interval arithmetic] <- 
 		link https://www.sciencedirect.com/science/article/pii/S0304397596001983?via=ihub
+	[CLP(F) and Constrained ODEs] <- link https://www.researchgate.net/profile/Tim_Hickey/publication/2505442_CLPF_and_Constrained_ODEs/links/54b7bc530cf2e68eb2804650/CLPF-and-Constrained-ODEs.pdf

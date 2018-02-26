@@ -59,7 +59,7 @@ op( 1000, fx, merge). % three lists
 
             % optional items concerning output
 
-%symbolic_names. % generate symbolic register names (perm/temp vars
+%symbolic_names. % generate symbolic register names (perm/temp vars)
 
 register(J,Name) :- J>0,J<8, swrite(Name,'D',J).
 
@@ -188,7 +188,7 @@ split_map(X,[T,P]):-
 %    ie. last block field is decreasing
 
 $env_size([],_,N,N) :-! .
-$env_size([_       (_,Blk,_..),_..], B, N, N) :- Blk =< B,!.
+$env_size([_(_,Blk,_..),_..], B, N, N) :- Blk =< B,!.
 $env_size([_,Vs..],B,M,N):- successor(M,M1),$env_size(Vs,B,M1,N).
 
 env_size(Index,[_,P],N):-$env_size(P,Index,O,N).
@@ -448,11 +448,11 @@ generate_call_sequence( F(As..),Index,Code,VT,Tail) :-
 
 
 compile_body( [], [], [proceed],VT,_) :-!,number_temp_vars(0,VT,1).
-compile_body( [Last call] , [N] , [comment (Last) , Code],VT, [Last]) :-!,
+compile_body( [Lastcall] , [N] , [comment (Last) , Code],VT, [Last]) :-!,
      generate_call_sequence(Lastcall,N,Code,VT,tail).
 compile_body( [F,Fs..], [N,Ns..], [comment(OC),C,Cs..],VT, [OC,OCs..]) :-
-generate_call_sequence(F,N,C,VT,not_tail), !,
-compile_body(Fs,Ns,Cs,VT,OCs).
+     generate_call_sequence(F,N,C,VT,not_tail), !,
+     compile_body(Fs,Ns,Cs,VT,OCs).
 
 %
 %           compile_clause
@@ -487,7 +487,7 @@ stdform( H:-[B..], H1:-[B1..]):-funch(H,H1), !, map funcb(B,B1),
 stdform( (H:-B), H1:-[B1]):-funch(H,H1), !, funcb(B,B1).
 stdform( H ,H1:-[]):-funch(H,H1),!.
 
-% need to assert any operator defintions (if possible)
+% need to assert any operator definitions (if possible)
 
 opcheck( op(A,B,C):-[]) :-assert( op(A,B,C) :-[]).
 opcheck( _).

@@ -28,7 +28,7 @@ reg('D5').
 reg('D6').
 reg('D7').
 
-$new state(Name, [Name, RL,[_..],[_..],RL,Heap]):-
+$new_state(Name, [Name, RL,[_..],[_..],RL,Heap]):-
      findall( reg(R,X), reg(R), RL).
 
 heaplist([N,R,T,P,I,_],[H..],[N,R,T,P,I,H]).

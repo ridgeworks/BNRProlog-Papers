@@ -22,9 +22,9 @@ The most efficient technique for parsing operator precedence grammars is to use 
 
 Here larger precedence values denotes weaker binding of operators. Reduction takes the top operator and the proper number of operands (in reverse order), constructs the corresponding term and pushes its reference back onto the operand stack.
 
-For uniformity, special operators corresponding to the beginning and the end of the expression (e.g. '|-' and '-|') are usually added, with '|-'='-|' > R and for all normal R. The final state of the parse has opstack=[' |-'], operand stack containing the final expression, and the input token ='-|', or, alternatively, one adds the transition by which '-|' cancels '|-', leaving the operator stack and token empty. Note that operands can alternatively be treated as if they were niladic operators with a precedence lower than that of any operator; the next operator will then force a reduction which just moves the operand to the operand stack. (We will need to make use of this below.)
+For uniformity, special operators corresponding to the beginning and the end of the expression (e.g. '|-' and '-|') are usually added, with '|-' = '-|' > R and for all normal R. The final state of the parse has opstack=[' |-'], operand stack containing the final expression, and the input token ='-|', or, alternatively, one adds the transition by which '-|' cancels '|-', leaving the operator stack and token empty. Note that operands can alternatively be treated as if they were niladic operators with a precedence lower than that of any operator; the next operator will then force a reduction which just moves the operand to the operand stack. (We will need to make use of this below.)
 
-This simple scheme needs refinement when different operator occurrences have equal precedence, for then the parsing of' x o y o z' is ambiguous, i.e. either left-associative (x o y) o z or right associative x o (y o z). To distinguish these cases Prolog uses the notion of operator type, where left-associative is denoted by **yfx** and right-associative by **xfy**. In addition, non-associative operators, denoted by **xfx**, would produce an error in such a case. Here the **x** denotes an expression which must be of strictly lower precedence, while **y** denotes an expression of lower or same precedence.
+This simple scheme needs refinement when different operator occurrences have equal precedence, for then the parsing of '`x o y o z`' is ambiguous, i.e. either left-associative `((x o y) o z)` or right associative `(x o (y o z))`. To distinguish these cases Prolog uses the notion of operator type, where left-associative is denoted by **yfx** and right-associative by **xfy**. In addition, non-associative operators, denoted by **xfx**, would produce an error in such a case. Here the **x** denotes an expression which must be of strictly lower precedence, while **y** denotes an expression of lower or same precedence.
 
 A second refinement is necessary when prefix and postfix operators are used. Their types are denoted similarly by **fx** and **fy** for prefix operators, and **xf** and **yf** for postfix operators. Since if a reduction is done, the reduced operator becomes a subordinate term for the new operator, the first rule must be amended by adding the condition that R be either infix or postfix. Similarly the second rule requires that L be either infix or prefix. The reduction rules are now:
 
@@ -54,14 +54,14 @@ The corresponding state machine is:
 
 When the precedence rules are combined with this state machine, the restrictions intersect in state 0 to produce:
 
-State 0 ( expecting operand, R must be in {fx,fy})
+State 0 (expecting operand, R must be in {fx,fy})
 
 .pre
 			L > R and L in {xfx, xfy,yfx,fy,fx} => push
 			L = R and L in {xfy,fy} =>push
 			else error.
 
-State 1 ( expecting operator, R must be in (xfx,xfy,yfx,xf,yf} )
+State 1 (expecting operator, R must be in {xfx,xfy,yfx,xf,yf} )
 
 .pre
 			L < R and R in {xfx,xfy,yfx, yf,xf} => reduce
@@ -88,14 +88,15 @@ This leaves the following 17 possibilities for a single symbol (same precedence)
 - fx + xfx, fx + xfy, fx + yfx, fy + xfx, fy + xfy.
 In a general operator sequence such as x p q y , the possible parses are:
 .pre
-			a. ((x p) q y) where pis postfix and q is infix
-		or	b. ( x p (q y)) where p is infix and q is prefix.
+			a) ((x p) q y) where p is postfix and q is infix
+		or	b) ( x p (q y)) where p is infix and q is prefix.
 
 When p is either postfix or infix, and q is either infix or prefix, the cases may be distinguished by precedence: if p < q then case (a) applies, while p > q is only valid in case (b). When p=q, the third and fourth restrictions above ensure that at most one parse exists, (a)if q is yfx and (b)if q is yf. The principle used is the same as that used in operand coercion, i.e. interpret the expression in whatever way which avoids syntax errors. (Such a principle , to be useful, presupposes that there is at most one correct parse.)
 
 Let us consider a more complicated example:
 
-.pre			x sl s2 s3 pl p2 y
+.pre
+			x sl s2 s3 pl p2 y
 
 where s1,s2,s3 are either infix or postfix, and p1,p2 are either infix or prefix, and suppose sl < s2 < s3 < p1 >p2 are the precedence relations. When the operator s1 token is read, it is indeterminate whether it is infix or postfix, so both versions must be pushed on the opstack. When s2 is read, it forces s1 to be interpreted as postfix, but s2 must be pushed as indeterminate. Similarly s3 determinizes s2. The precedence relation determines that pl must be infix, and thereby determinizes s3 (as well as p2). Note that at most the top operator on the stack is indeterminate at any time, and that it becomes determinate before the next operator is pushed, i.e. it is determinate before it is emitted as a heap constructor, so back-tracking can be avoided.
 
@@ -106,11 +107,13 @@ In the analogous case x s1 < s2 < s3 = p1 > p2 y, with s3 having the same preced
 but the global restriction ensures that at most one of them is infix.
 
 There is, however, an ambiguity which does not seem to have been eliminated in the proposed standard (which seems to allow each usage of an operator symbol to have a different precedence):
-.pre			x s t y
+.pre
+			x s t y
 where s is postfix with precedence sp or infix with precedence si
 and t is prefix with precedence tp or infix with precedence ti
 and sp < ti and si > tp. This allows two different parses:
-.pre			(x sp) ti y or x si (tp y)
+.pre
+			(x sp) ti y or x si (tp y)
 which in general cannot be resolved by context. One way to avoid this is to add the restriction (as BNR Prolog currently does) that *all uses of the same operator symbol must have the same precedence*.
 
 ### Operator and Operand Ambiguity
@@ -151,7 +154,7 @@ Operand		tst.b state			; if Operand expected
 Opand2		move.l d1,(ce)+		; 9 push value onto operand stack
 			SET state			; state=1 for operator expected
 
-Next		NEXTTOKEN dO,d1		; dO is action, d1 is value
+Next		NEXTTOKEN d0,d1		; d0 is action, d1 is value
 			jmp @act(pc,d0*2)	; 10 case action of
 @act		bra.b Operand		; 6 operand
 			bra.b Operator		; 6 operator
@@ -181,7 +184,7 @@ Operator	GETOPTYPE d1, d0	; d0 = [ type | precedence]
 			swap.l d0
 			
 Rloop		move.l (sp),d3		; 9 L from op stack
-			cmp.w dO,d3			; 2 compare precedences
+			cmp.w d0,d3			; 2 compare precedences
 			blt.b Reducechk		; 4,6 L < R
 			bgt.b Pushchk		; 4,6 L > R
 			; equal precedences, use types to discriminate
@@ -202,14 +205,14 @@ Pushchk		swap.l d3			; 2 L must be
 			move.l d3,(sp)		; 8 update L
 			
 Pushop		move.l d1,-(sp)		; 9 push operator name
-			move.l dO,-(sp)		; 9 and type
-			swap.l dO			; 2 if optype
-			andi.b #unary,dO	; 7 was possibly unary
+			move.l d0,-(sp)		; 9 and type
+			swap.l d0			; 2 if optype
+			andi.b #unary,d0	; 7 was possibly unary
 			bne.b Next			; 4,6 then continue same state
 			clr.b state			; 4 else state:= expect operand
 			bra.b Next
 			
-Reduce1		swap.l d4			; 2 update dO
+Reduce1		swap.l d4			; 2 update d0
 			move.l d4,d0		; 2
 			bra.b Reduce		; 4,6
 			
@@ -249,7 +252,7 @@ Endst		clr.l (hp)+			; 9 end of sequence
 
 ### Brackets and Commas
 
-Standard prolog overloads ','and ')'. Comma is used to denote three completely different things: the separator between arguments of a functor (corresponding generally to succession in memory), the separator between list items (where [a,b] is shorthand for a.b.nil), and as the 'and' operator in clauses. The syntax of uses as separator is in principle different from that of the and operator in that it ought to have the maximum (weakest) precedence possible. The standard proposal avoids this syntactic distinction by stating that items in lists or functors shall (must?) have lower precedence value than that of the 'and' operator, but this does not seem to be much help. From the point of view of implementations, it still requires that ',' be treated in two syntactically different ways if this rule is to be enforced; from the viewpoint of users a uniform syntax for comma is misleading when it masks radically different data structures.
+Standard prolog overloads ','and ')'. Comma is used to denote three completely different things: the separator between arguments of a functor (corresponding generally to succession in memory), the separator between list items (where `[a,b]` is shorthand for `a.b.nil`), and as the 'and' operator in clauses. The syntax of "uses as separator" is in principle different from that of the and operator in that it ought to have the maximum (weakest) precedence possible. The standard proposal avoids this syntactic distinction by stating that items in lists or functors shall (must?) have lower precedence value than that of the 'and' operator, but this does not seem to be much help. From the point of view of implementations, it still requires that ',' be treated in two syntactically different ways if this rule is to be enforced; from the viewpoint of users a uniform syntax for comma is misleading when it masks radically different data structures.
 
 BNR Prolog has departed tradition by making ',' uniformly a separator, both syntactically and semantically. This provides in part several of the usueful features of BNR Prolog, such as list-structure conversions and meta-call, and vastly simplifies the writing of metainterpreters. However, it does create occasional porting problems for Edinburgh code which relies heavily on the use of ';'.
 
@@ -264,7 +267,7 @@ There are the following sets ofbrackets to be dealt with:
 			\{		}\		curly brackets.
 (The last are not part of the proposed standard, but are extremely useful additions to the syntax, apart from any particular interpretation.)
 
-Syntactically speaking in the context of the parser described above, all open brackets (except I_ ) should be treated *as if* they were prefix (fy) operators with precedence higher than that of any other operator. (Making them all the same precedence allows arbitrary nesting.) The special brackets |_ (_| ) should be of type fx (xf) and be of higher precedence. Similarly the close brackets should have type yf with the same precedence as the open bracket. This violates the global constraint which was imposed on normal operators, but provides for proper handling of normal operators whenever the top of stack or incoming token is a bracket. The bracket matching check and bracket semantics then replace the push of the right bracket (right brackets are never pushed.) This suggests that we should mark close brackets as having a distinct type (ket), and it is also convenient to do the same with open brackets (bra) where bra is treated as equivalent to fy for purposes of operator processing. Note that open brackets only occur in operand- expected state, while close brackets are only permi'tted in operator-expected state.
+Syntactically speaking in the context of the parser described above, all open brackets (except I_ ) should be treated *as if* they were prefix (**fy**) operators with precedence higher than that of any other operator. (Making them all the same precedence allows arbitrary nesting.) The special brackets |_ (_| ) should be of type **fx** (**xf**) and be of higher precedence. Similarly the close brackets should have type **yf** with the same precedence as the open bracket. This violates the global constraint which was imposed on normal operators, but provides for proper handling of normal operators whenever the top of stack or incoming token is a bracket. The bracket matching check and bracket semantics then replace the push of the right bracket (right brackets are never pushed.) This suggests that we should mark close brackets as having a distinct type (ket), and it is also convenient to do the same with open brackets (bra) where bra is treated as equivalent to **fy** for purposes of operator processing. Note that open brackets only occur in operand- expected state, while close brackets are only permitted in operator-expected state.
 
 Specifically: assign the following op-types:
 	|_				bra		\2**11-1\		(i.e. > 1200 )
@@ -325,15 +328,14 @@ func :-
          else if top op is ( then error (no tuples allowed)
      else error ( list as separator )
 ~~~
-The problem with this approach is one of compatibility with respect to ',' as operator; in particular, it would require bracketing of clause bodies and conjunctive queries, since the ',' is always treated as a separator. One way to get around this (as in current BNR Prolog) is to do some context-sensitive coercions such as treating ',' explicitily as an operator in certain contexts, but this has the drawback (as in standard Prolog)
-that clause bodies are no longer standard lists. As an alternative, however, one can insist that comma is always a separator but supply brackets in thos contexts that require them. This would, for example, coerce the clause written 'a :- b, c, d.' into a:-[b,c,d].
+The problem with this approach is one of compatibility with respect to ',' as operator; in particular, it would require bracketing of clause bodies and conjunctive queries, since the ',' is always treated as a separator. One way to get around this (as in current BNR Prolog) is to do some context-sensitive coercions such as treating ',' explicitly as an operator in certain contexts, but this has the drawback (as in standard Prolog) that clause bodies are no longer standard lists. As an alternative, however, one can insist that comma is always a separator but supply brackets in those contexts that require them. This would, for example, coerce the clause written `a :- b, c, d.` into `a:-[b,c,d]`.
 
 The mechanism to do this would be to treat ',' as having the standard Edinburgh precedence level of 1000, but after reducing any lower precedence operators, insisting that the top operator be a left bracket, and supplying one if necessary. The punctuation handler must likewise be prepared to close a (single) bracket if necessary. This would handle the case of ':-' (infix and prefix) and prefix '?-', but there remains a problem with ';'. The standard parse of
 .pre
-				a:- b,c;d,e.
-	is			a:- (b,c);(d,e).
+				`a:- b,c;d,e.`
+	is			`a:- (b,c);(d,e).`
 	while BNR Prolog would currently parse it as:
-				a:- b,(c;d),e.
+				`a:- b,(c;d),e.`
 (The latter is felt by some people to be more useful or natural, since one is conditioned to expect ',' to be weak, i.e., a separator. This is a straight incompatibility between BNR Prolog and Edinburgh, so whatever one does will make somebody unhappy.)
 
 
