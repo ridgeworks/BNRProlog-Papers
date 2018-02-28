@@ -1,0 +1,153 @@
+[MyWordDocStyle]
+## Linkages
+
+**William J. Older**
+Computing Research Laboratory
+Bell-Northern Research
+P.O. Box 3511, Station C
+K1Y 4H7, Ottawa, Ontario
+
+The original design for WAM used the following linkage for environments:
+~~~
+registers:
+	e		current environment
+	e'		previous environment
+	pc		prolog code pointer
+	pc'		continuation pointer
+	
+environment:
+	e		|  ce |
+			|  cp |
+			|vars |
+			| ... |
+			
+code: (modified for separate stacks)
+
+call:		pc' := pc ;
+			...
+			
+alloc:		e' := e ;
+			e := e + n ; n is bytesize of previous environment
+			cp(e) := pc' ;
+			ce(e) := e' ;
+
+dealloc:	pc' : = cp(e) ;
+        	e := ce(e) ;
+
+proceed:	pc := pc' ;
+~~~
+
+The rationale for this is to avoid creating an environment on leaf procedures; hence call and proceed must be "inverses" and alloc and dealloc as well . The drawback is that it uses up two "registers" unproductively.
+
+As an alternative consider:
+~~~
+registers:
+	e		current environment
+	pc		prolog code pointer
+	a0		scratch
+	
+environment:
+	e		|  ce |
+			|  cp |
+			|vars |
+			| ... |
+
+code: (for separate stacks)
+
+call:		(e) := pc ;
+			...
+			
+alloc:		a0 := e ;
+			e := e + n ; n is bytesize of previous environment
+			(e)+ := a0 ;
+
+dealloc:	e := -(e) ;
+
+proceed:	pc := (e) ;
+~~~
+
+That is, the continuation is saved in the pre-call environment. This eliminates both extra registers as well as two body instructions. It also eliminates the need to save the continuation (as well as e) in choicepoints.
+
+Note that this does require *that all clauses that make calls must have environments, even if no permanent variables are needed*. (This appears to be different from the standard WAM description, but in fact the same requirement exists there also.)
+
+
+Backtracking and ! Cut
+
+Warren's original choicepoint (modified for two stacks) contained:
+~~~
+choicepoint:
+lcp:	bh		heap pointer			(hp)
+		b		current top of stack	??
+		te'		trail end				(te)
+		clp		next clause
+		lcp'	previous choicepoint	(lcp)
+		bcp		continuation			(pc')
+		bce		previous env			(e')
+		args ...
+~~~
+
+but Warren did not discuss cut at all. Backtracking restores the state from these saved values and advances clp; at the last clause the choicepoint is removed (updating lcp) . In addition, a copy of bh, called hb, is maintained in a register and the same for b.
+
+Cut complicates the picture somewhat. The problem is that a cut must discard all choicepoints created since the current procedure was entered. The simplest way to do this is to save a copy of lcp on each call (register cb) and save it in (cutb) each environment and choicepoint:
+~~~
+	e		|  ce |
+			|  cp |
+			| cutb|
+			|vars |
+			| ... |
+~~~
+
+The code for cut then reads
+`cut:-		lcp := cb`
+
+Logically, cb is set up during the call opcode, and is saved as cutb during alloc, and is restored on both proceed and failure. Note that if deep cut is supported, it becomes necessary to check first that lcp>cb before doing the assignment.
+
+Reference [1] suggests a more complex implementation in which compile time knowledge about which clauses contain cuts can be used to eliminate the need for a register. This entails options on indexing instructions such as Try, Retry, Try_only, etc. to place the saved lcb value onto the stack as if there were going to be an environment; the cut instruction itself comes in two options depending on whether it is bracketed by alloc/dealloc or not. These opcode proliferations do not seem to be offer any significant advantages over the simpler implementation.
+
+Combining this cut model with the call linkages described above gives:
+~~~
+registers:
+	e		current environment
+	pc		prolog code pointer
+	a0		scratch
+	cb		cut point
+	
+environment:
+	e		| cutb|
+			|  ce |
+			|  cp |
+			|vars |
+			| ... |
+
+code: (for separate stacks)
+
+call:		(e) := pc ;
+			cb := lcp
+			...
+			
+alloc:		a0 := e ;
+			e := e + n ; n is bytesize of previous environment
+			(e)+ := cb ;
+			(e)+ := a0 ;
+
+dealloc:	e := -(e) ;
+
+proceed:	pc := (e) ;
+			cb := cutb(e) ; restore from environment
+			
+cut:		 lcp:= cb ;
+~~~
+
+Note that no trail trimming is done on cut, unlike the current system. This is justified by noting that any trail entry represents a variable earlier than some choicepoint which is bound to something newer than that choicepoint; when a choicepoint is removed trimming removes those items from the trail which no longer belong there, because the only choicepoint separating the variable and the term to which it is bound is the choicepoint just cut. Failure to remove such a choicepoint from the trail means that subsequent failure will reset the variable, even though it is later on the stack/heap than the restored top; this is unnecessary but not harmful, and cheaper than either doing the appropriate test or trimming the trail.
+
+&
+	@import ../MyWordDocStyle.mmk
+	!` .. `! <- <span class='language-prolog'> text
+	// for pseudocode blocks, define '$ .. $' for opcodes, disable '_ .. _' (var names)
+	pseudocode .. <- <pre class=my_pseudo> prose
+	$ .. $ <- <b>
+	_ .. _ <-
+	\[ <- is [
+	.pre .. <- <div style='white-space:pre'> prose
+	@css
+		pre.my_pseudo {line-height:1.1em}

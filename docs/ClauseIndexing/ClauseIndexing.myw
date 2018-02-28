@@ -1,0 +1,291 @@
+[MyWordDocStyle]
+## Clause Indexing and Calls
+
+**William J. Older**
+Computing Research Laboratory
+Bell-Northern Research
+P.O. Box 3511, Station C
+K1Y 4H7, Ottawa, Ontario
+
+One of the features of Prolog implementations most closely associated with WAM is an emphasis on clause indexing. Warren's original design called for (in order) a selection (implicit) based on arity, a switch on the type of the first argument, and a hashtable based on the first argument. The literature describes various extensions and elaborations, such as hashing on additional arguments and mode declarations.
+
+First of all, it should be noted that these techniques evolved in - and make the most sense in - a scenario characterized by global static compilation. In situations where dynamic clauses are employed heavily, or where partial compilation of individual modules is the norm, the utility of these techniques is reduced and their complex clause linkage data structures introduce additional problems.
+
+Second, for the sort of style which we have developed for BNR Prolog these techniques are not so effective. Arity is a useful discriminant only if it is commonly the case that the same predicate name is used with different arities; the usual case where this seems to occur is that of supplying a low arity default "front end" to a large arity predicate and this case is usually not significant in terms of the number of calls which actually occur, i.e., the dynamic frequency.
+
+The separation based on tags is also marginal, because most relations have first arguments of the same type. The most important exception to this -in normal Prolog- is recursive list processing where the reduction step has a list as first argument while the base case has "nil", an atom; this case does not apply to BNR Prolog, where 0 is typed as a list. On the other hand, metapredicates which recurse over general structures will, in BNR Prolog, usually have a clause for variables, one for structures, two for lists, and one or more for scalar constants, and some of these (e.g., structures) can be discriminated by argument type in BNR Prolog but not in "standard" Prolog.
+
+Lastly, hashtable indexing is most helpful for large data tables stored as fact predicates. Large fact databases are relatively uncommon in BNR Prolog as such relations (for other reasons) are usually stored in State Space. Indeed, instantiated scalar first arguments are quite uncommon. For this reason, hashcoding will be taken here to mean using a hashvalue in a linear search through clauses, rather than actual use of direct indexing via a hash table. (The latter, however, would be useful in State Space.)
+
+In addition it should be noted that in compiled BNR Prolog clause head reordering and deep unification deferral strategies tend to minimize the cost of detecting head failures, i.e., the difference in processing time between a clause rejected because of a hash mismatch and that of one rejected by first (or any) argument simple unification failure.
+
+The savings in processing time due to such techniques is actually quite limited. If -and only if- the discriminations produce a single candidate clause the cost of creating a choicepoint can be eliminated; this also eliminates some possible variable bindings and untrailing costs. Statically speaking , this degree of discrimination is also uncommon. Dynamically, however, if nil and non-nil lists can be discriminated, most list processing predicates will not generate choicepoints, and since these predicates often account for a disproportianate number of short lips, this optimization is important.
+
+The second savings which occurs concerns the number of clauses that have to be considered; when hash tables are used this becomes significant if the number of clauses is large. Even without hash tables, if the list of candidates can be ended earlier because of hash codes there is a similar savings.
+
+These savings are not very large and must be balanced against the costs associated with doing any discrimination at all. To get a quantitative handle on the trade-offs, it is neccesary to model the costs more precisely. A simple model is presented in the Appendix.
+
+Assumptions:
+~~~ pseudocode
+registers:	ppc		d2 (first arg)
+			hp
+			ce
+			temp
+
+			sp		(system stack pointer a7)
+
+available:	a0,a1,d0,d1
+~~~
+
+Tradeoffs:
+
+The principal tradeoff's are between code size and special case code, register allocation, and data structure coding. Maximizing the amount of common code, thus minimizing the size of the interpreter, maximizes the likelihood of cache hits for interpreter instructions, and this makes a significant difference in performance especially on the faster processors; a few extra instructions may be needed to accomplish this, but it appears to be a good bet.
+
+Passing arguments and holding a few temporaries in registers seems also useful (especially in body codes), but cutting back slightly on the number of registers employed in this manner can improve efficiency of critical operations such as variable dereferencing.
+
+The encoding of tags- because of the large number (10) of basic types- produces conflicts over the use of bits in 32-bit cell. Tag encoding optimal for retrieval and testing requires a standard tag field to avoid sequences of bit tests, and this limits the size of integers, floats, and requires that pointers have their upper 4 bits free.
+
+Tags
+
+Tags are tacitly assumed to be encoded as upper 4 bits:
+~~~ pseudocode
+var			0 0 0 0 <ptr>
+
+list		1 0 0 0 <ptr>
+tailvar		1 0 0 1 <ptr>
+structure	1 0 1 0 <ptr>
+constraint	1 0 1 1 <ptr>
+
+scalars
+integer		1 1 0 0 <val>
+float		1 1 0 1 <val>
+interval	1 1 1 0 0 <ptr>?
+bucket		1 1 1 0 1 <ptr>?
+symbol		1 1 1 1 <val>
+~~~
+This coding is well-suited for unification as it:
+- allows fast testing of variable/non-variable
+- allows fast testing of scalar types
+- has minimum of bits to clear in lists/structures
+
+The call opcode is structured as
+pseudocode `		`06 | functor | ar | es |
+where functor is a symbol, i.e. a negative index into the ast table, ar is the arity, and es is the environment size. We start just after the branch to the code for "call", with the ppc pointing at the functor:
+~~~
+		move.l	(ppc) +, d0		; 9 get functor
+		move.l	ast(a?), a1		;10 get ast base
+		lea		0(d0,al), a1	; 6 a1=> clause chain
+									25 cycles (cache)
+~~~
+For native code there are several possibilities; one is:
+in body:
+~~~
+		jsr		<call>			; jump to entry point in interpreter
+		data	functor
+		data	ar|es
+
+Call: 	move.l	(sp)+, ppc		; get prolog program counter
+~~~
+(as above)
+
+A slightly faster and slightly larger alternative is:
+in body:
+~~~
+		move.l	#functor, d0
+		jsr		<call>
+		data	ar|es
+		
+Call:	move.l	ast(a?), a1		 etc.
+~~~
+
+Since this is a large and frequently used opcode, it is worth trying to make it share code almost 100% with exec, which differs only slightly (by not saving the pc).
+
+Next we determine whether there is a first argument to hash:
+~~~
+		tst.b	(ppc)			; 	9		arity 0?
+		bra.b	$nokey			;	6
+									15 
+~~~
+
+If there is a first argument, we must dereference it and compute its hash value:
+~~~
+		tst.l	d2				; 2 check first argument
+		bgt.b	$hash			; 4 , 6 if not variable
+$10		move.l	d2,a0			; 2
+		cmp.l	(a0) ,d0		; 9 check for unbound
+		beq.b	$nokey			; 4 , 6 if unbound
+		move.l	d0, d2			; 2 chase variable chain
+		blt.b	$10				; 6
+							; d0=d2 contains dereferenced first arg
+							; a0 is pointer to it
+~~~
+
+This costs 8 + 23* no. of indirections cycles plus 15 extra if an unbound variable. Note that the number of indirections is on average small- 1 or less. This entire cost does not need to be included as a hash overhead, since it would eventually be done eventually anyway; by leaving the dereferenced result in the original register there is no wasted effort ( except for structures?). (Indeed, there may in some circumstances be a net savings if the future dereferencing would have had to be done many times because of backtracking.)
+
+We now decode the value and compute hash values, as described above:
+~~~
+$hash	btst	#lst, d2		; 9
+		bne.b	$20				; 4 , 6
+			; must be list since tailvars not allowed in arguments
+		cmpi	#nil, d2		; 6
+		beq.b	$key			; 4 , 6 if nil use as hash
+		move.l	#list, d2		; 6 otherwise use std list
+		bra.b	$key			; 6
+		
+$20		btst	#num, d2		; 9 test for numeric
+		beq.b	$key			; 4 , 6
+		btst	#sym, d2		; 9 test for symbol
+		beq.b	$key			; 4 , 6
+			; must be a structure, get principal functor into low word
+		move.l	4(a0), d0		;10
+		beq.b	$nokey			; 4 , 6 not usable, var
+		move.w	d0, d1			; 2
+~~~
+
+In summary the fixed hash costs (denoted by h0) are:
+~~~ pseudocode
+	list:		35
+	null:		25
+	num:		30
+	sym:		43
+	struc:		59
+~~~
+
+This is dependent on the details of data structure coding, and leaves out checks for intervals and buckets, which never occur in clause heads. Note also that a 5-way branch table to different starting values would cost very little here, and would allow some clauses to be skipped.
+
+We assume that the search table entries look like:
+>	| hash val | nextkey | nextnk | ar | code ...
+
+There are two cases, depending on whether there was or was not a key for the first argument of the call. If there was no key, the hashvals are ignored and nextnk is used to find the next clause; it is assumed to point to the nextnk field of the next clause. The only check in this case is the arity check. If there was a key, and hashval is nonzero, then if the keys and arities both match, we have found a good candidate. If either match fails, then the next clause with the same key and arity or with hashval=0 is reached via nextkey. This provides for early escape on a keyed search. Entries with hashval=0, which are common to all the different chains, effectively link to the same next clause via either pointer, but nextkey points to the beginning while nextnk is offset by 8, so it makes a difference which field is used. Pointer chains end with 0.
+~~~
+		; a1 => first clause, d0 and d1 are free registers
+$nokey	move.b	(ppc)+, d0		; 4 get arity
+		addq.l	#8, a1			; 2 offset to nextnk
+$lp		move.l	a1, a0			; 2
+		move.l	(a0)+, d1		; 7 get next clause
+		beq.b	$last			; 4 , 6
+		cmp.b	(a0), d0		;11 check arity
+		beq.b	$cand			; 4 , 6 continue search
+		move.l	d1, a0			; 2
+		bne.b	$lp				; 4 , 6
+		bra.b	Fail			; 6
+			; found good clause, d1 => next clause
+$cand	clr.l	d0				; 2 set no key condition
+		bra.b	$tcp			; 6
+			; d	 => next clause, a0 => code, d0=0
+$last	cmp.b	(a0), d0		;11
+		beq.b	$cont			; 4 , 6
+		bra.b Fail
+~~~
+This can be summarized as s(nk) = 48+ 36* <no. of skipped clauses>.
+
+~~~
+$key	tst.l	(a1),			; 9 check for no hash value
+		beq.b	$30				; 4 , 6
+		cmp.l	(a1)+, d0		;11 check key against hash value
+		beq.b	$30				; 4, 6 matches
+		move.l	(a1)+,a1		; 7 get next clause
+$25		cmpi.l	#nil, a1		; 6 check for end
+		bne .b	$key			; 4 , 6
+		bra.b	Fail			; 6
+$30		move.l	(a1)+,a0		; 7 get next clause
+		addq.l	#4, a1			; 2 skip
+		cmp.b	(a1), (ppc)		;11 ??? check arity
+		bne.b	$25				; 4 , 6 if not same keep looking
+~~~
+This is summarized by s(k) = 54 + 46 *<#skipped clauses (with hashval)>. The difference 54- 48 can be included into hO as a fixed cost for hashing; the difference 46-36=10 is then the per clause cost of hashing.
+
+~~~
+; found good clause: a1=> next clause, a0 => code, d0=key
+$$tcp	cmpi.l	#nil, a1		; 6
+		beq.b	$cont			; 4 , 6
+		Newchpt					; ???
+$cont	move.l	ppc, (ce)		; 7 save continuation
+		move.l a0, ppc			; 2 set ppc
+		bra mainloop			; 6
+~~~
+This is represented by 25 + <Choicepoint >*< prob. of choicepoint>.
+
+~~~
+		move.l	lcp(temp), a0		;10 top choicepoint stack
+		move.l	d0, ??				; 2 move hashkey
+		clr.l	d0					; 2
+		move.b	(a0), d0			;11 get arity
+		asl.w	#2, d0				; 8 multiply by 4
+$svtv	cmp.w	#28., d0			; 6 non register temps?
+		bge.b	$svrg				; 4 , 6 branch if not
+		move.l	0(d0,temp), -(a0)	;16 push argument
+		subq.w	#4, d0				; 2
+		bra.b	$svtv;				; 6
+$svrg	add.w	#-28., d0			; 6
+		jmp		0(d0, pc)			;10
+		move.l	d7, -(a0)			; 8
+		move.l	d6, -(a0)			; 8
+		move.l	d5, -(a0)			; 8
+		move.l	d4, -(a0)			; 8
+		move.l	d3, -(a0)			; 8
+		move.l	d2, -(a0)			; 8
+		move.l	d1, - (a0)			; 8
+		move.l	hp, -(a0)			; 8
+		move.l	ce, -(a0)			; 8
+		move.l	te(temp), -(a0)		; 8
+		move.l	a1, -(a0)			; 8 clause pointer
+		move.l	hash, -(a0)			; 8
+		clr.l	-(a0)				; 8 stack mark ???
+~~~
+
+Thus
+> <choicepoint> - \109 + 8* min(nv,7) + 34 * max(O,nv - 7)\
+Assuming the average number of arguments is 5, this gives the average cost of a choicepoint to be 149 cycles.
+
+Putting the pieces together gives:
+~~~
+		opcode			40
+		deref			8 + 38* #deref
+		h0				25-60
+		search			48 + 36*n or 54 + 46*n
+		cp				25 ( + 149)
+		total (aprox)	165 + 38*#deref + 40*n (+ 149 ).
+~~~
+
+(Note that h0 is almost 1/3 of the choicepoint creation cost; however the
+existence of a choicepoint entails other costs including its removal.)
+
+
+#### Appendix
+
+Let N be the initial number of clause attempts for a predicate call , C the average cost of choicepoints (creation and destruction plus trailing costs), n the next clause cost without discrimination tests, h the cost per clause of some
+discrimination technique, and e the efficiency of the discrimination defined by (1-e)N= N' the number of candidates which pass the discrimination tests.
+Then the breakeven point is given by:
+>	C + nN = C + h0 + (n+h)(1-e)N
+if the choicepoint is still neccessary and
+>	C + nN = h0 + (n+h)(1-e)N
+if not. To combine these, let p be the probability that a choicepoint is eliminated on the call by the discrimination technique , so
+>	nN = (n+h)(1-e)N + h0 - pC,
+or savings = nN- (n+h)(1-e)N -h0 + pC = neN - h(1-e)N -h0+ pC.
+Note that the savings can be negative ifp and e are low enough, e.g. if e=0 and pC < hN. On the other hand, a high efficiency produces savings even ifp=0.
+At the breakeven point, then,
+>	hN(1-e ) + h0 = nNe + pC,
+or in dimensionless form: (h/n)N(1-e) +(h0/n) = Ne +p(C/n).
+
+Approximate parameter values have been estimated as:
+>
+	h = 10
+	h0 = 8
+	n = 36
+	C = 149
+	
+giving`	`0.28N(1-e) + 0.22= Ne + 4.1 p
+or`		`0.22 = N(l.28 e - 0.28) + 4.1 p .
+
+&
+	@import ../MyWordDocStyle.mmk
+	!` .. `! <- <span class='language-prolog'> text
+	// for pseudocode blocks, define '$ .. $' for opcodes, disable '_ .. _' (var names)
+	pseudocode .. <- <pre class=my_pseudo> prose
+	$ .. $ <- <b>
+	_ .. _ <-
+	\[ <- is [
+	.pre .. <- <div style='white-space:pre'> prose
+	@css
+		pre.my_pseudo {line-height:1.1em}
