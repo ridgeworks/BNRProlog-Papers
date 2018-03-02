@@ -1,0 +1,602 @@
+[MyWordDocStyle]
+## Design and Implementation of a Static Timing Analyzer using CLP(BNR)
+
+**Tammer Kamel**
+Computing Research Laboratory
+Bell-Northern Research
+P.O. Box 3511, Station C
+K1Y 4H7, Ottawa, Ontario
+
+### ABSTRACT
+This paper illustrates the methodology for using constraint logic programming to do static timing verification of digital synchronous circuits.
+
+The method entails modelling the timing behavior of digital circuits using a system of non-linear equations. By also modelling the timing requirements of individual synchronous devices by mathematical relations, CLP(BNR) can be used to determine if the mathematical relations representing timing requirements are met by the design modelled by the system of equations.
+
+The intent of the paper is to present the fundamental concepts behind the method of analysis without delving into the mechanisms behind the CLP(BNR).
+
+The paper uses the parts of a simple Prolog program to illustrate implementation strategies for constructing the analyzer. The program is built on a library of 10 basic circuit devices.
+
+.TOC	{#id TableOfContents}`        `**Table of Contents**
+
+### Static Timing Verification
+In general, the functionality and the timing of a circuit are two separate design issues. Functional design entails finding some configuration of combinational and sequential devices which implements a given set of boolean state equations. Timing analysis is the process of verifying that a circuit is designed in manner which does not violate the timing requirements of its internal components. Examples of these requirements include set up and hold times of devices such as flip-flops.
+
+The timing correctness of a digital circuit is generally independent of its functionality. That is, the nature of the data on the pins in a circuit does not affect when that data is latched and thus does not cause or prevent timing violations. This implies that it is possible to verify the timing correctness of a circuit with no a priori knowledge of its functionality. This is premise of static timing verification.
+
+Static timing verification is done exclusively in an "*event domain*"; It is done with no regard for the functionality of the circuit. For example, a flip-flop's setup and hold requirements are confirmed by verifying that none of its inputs change too close to the active edge of its clock. Setup and hold verifications are determined by when and for how long data is stable and not what that data is.
+
+Because static timing verification ignores the functionality of a circuit, it offers no information on the functional correctness of the circuit design. However, it does guarantee consistency of operation in the functional domain: if there are no timing violations in the circuit, then there will be no danger of a device malfunctioning for timing reasons^1^. Thus a circuit verified by static timing analysis that is also functionally correct, will work properly when constructed.
+
+Figure 1 illustrates the modelling steps in the analysis method. The process entails abstracting the physical circuit description to an *event network* which captures the causal relationship between devices with no regard for functionality. The event network can then be represented by a system of equations and analyzed mathematically.
+
+note> 1. provided that initial assumptions are correct
+
+centreblock> [FIGURE 1]
+fig> FIGURE 1. Levels of abstraction in static timing verification
+
+<#TableOfContents>
+
+### Digital Circuits in the Event Domain
+
+#### Event Network Modelling
+
+There are two stages to transforming a static timing problem into a mathematical representation. The first is to mathematically model the timing *behavior* of digital circuits and the second is to mathematically model the timing *requirements* of the synchronous devices which compose the circuit. Once this is accomplished, the problem of static timing analysis reduces to proving the mathematical relations representing timing requirements by manipulating the equations modelling circuit behavior.
+
+The conceptual wires that interconnect devices on a schematic diagram are called nets. The event network model is based on knowing, or deducing as necessary, when data on nets will be stable and when it will not. Nets are generally in a stable state the majority of time, but there are always time intervals when data at least *could* be changing. It is these intervals of instability that may cause a timing malfunction at some device. Timing verification is the process of making sure these intervals on a device input do not occur when the device requires stability for latching the data, (which is slightly before and after the active clock edge.)
+
+#### Event Windows
+
+An *event window* is defined as a time interval in which the data on a given net is unstable; i.e. it *could* change, which would be an *event*. An event window of [2,7] on a given net in a circuit implies that the data on that net could change one or more times between time 2 and time 7 ^2^, but is guaranteed not to change any time outside the bounds of the interval.
+
+In static timing verification, event windows are the inputs and outputs of synchronous and combinational devices. An event on the input of a device implies that the data could be changing. Since the data may change on the input, therefore the data may change on the output to reflect the new input configuration. Hence there will be an event on the output. In general, devices are driven by input event windows and they generate output event windows. Output event windows are "put" on the net the device is connected to and subsequently become input event windows for other devices whose inputs are connected to the same net. This is analogous to output boolean data becoming input data at the next device.
+
+As in the functional domain, every device in the event domain maps its input to an output according to some relationship specific to the device in question. Once one determines how devices behave in the event domain, one can define how a device maps input to output in the event domain and use this as a foundation for building a verification system.
+
+note> 2. time units are usually nanoseconds but are left unspecified for now
+
+centreblock> [FIGURE 2]
+fig> FIGURE 2. Two "events" and their window representations
+
+#### Modelling Device Behavior
+
+In physical circuits, devices have inherent output delays which are influenced by operating conditions and environmental factors. Thus, it is not possible to specify a precise value for the delay of a particular 'device. The best that can be done by manufacturers is to specify a minimum to maximum range for the delay. Since there is always some uncertainty as to the precise delay of a circuit component there will always be uncertainty as to the exact instant the output changes in response to an input change.
+
+In functional design output delays tend to be ignored for simplification purposes but in timing verification they are of critical importance. Consider a generic single input, single output device whose input changes at some arbitrary instant. The consequence of this will be a change on the output of the device some delay after the change on the input. In the event domain model, these changes on the input and output would be modelled using event windows. The following quantitative example illustrates how this calculation is done in the event domain.
+
+Consider an inverter whose output delay is specified to be between 1 ns and 4 ns and whose input could change sometime between time 3 ns and time 6 ns. One can deduce that the earliest the output could change is at time 4 ns (earliest input, shortest delay) and the latest it could change is at time 10 ns (latest input, longest delay).
+
+This same problem can be modelled and solved mathematically. In the event domain the inverter sees an input event window of [3,6]. The output event window is calculated as follows^3^:
+~~~
+				Output == Input + Delay									(EQ 1)
+				Output == [3,6] + [1,4]									(EQ 2)
+				Output == [4,10]										(EQ 3)
+~~~
+The output event window is `[4,10]`, stating that if the output changes as a result of the specified change on the input, the change will occur between time 4 ns and time 10 ns. This is the same conclusion arrived at by the method used first.
+
+note> 3. CLP(BNR) uses "==" to denote equality in interval arithmetic
+
+##### Buffers, inverters, and other single input devices
+
+All single input, single output devices behave as delay elements in the event domain. In general, they generate an output event window according to the equation:
+~~~
+				Output = Input + Delay									(EQ 4)
+~~~
+where `Input` and `Output` are event windows and `Delay` is an interval. Note that the output of a single input device is a function of only its input event window and some output delay. The value of the delay is determined by the specifications of the particular device.^4^
+
+note> 4. The "Delay" parameter is actually a function of correlation parameters. This is addressed in section 4.
+
+##### Combinational Devices
+
+The output of an ideal^5^ combinational device could change as a result of any one of its inputs changing. This means there could be a change on the output any time there is a change on a given input. So, for an ideal combinational device, the output event window is the disjoint union of all input event windows. This concept is illustrated in figure 3.
+
+centreblock> [FIGURE 3]
+fig> FIGURE 3. The span of a set of intervals is their disjoint union. Span is equivalent to logical `or` applied to intervals; X = span(A,B,C) says that the event on X could occur in *the time interval specified by A or the time interval specified by B or the time interval specified by C*.
+
+Consider a three input generic combinational device with input event windows A,B,C. The device sees three input events, each of which could cause the output to change. This means that the output could change any time one of the inputs change; i.e. the output could change during the time interval specified by A or the time interval specified by B or the time interval specified by C. Purely for simplicity, the span of a number of intervals is represented by a single interval which encompasses them all. Mathematically however, the span is really the disjoint union of the intervals.
+
+Now, to model a real combinational device, one must also account for output delay. Hence, the equation for calculating the output event window of an n input combinational device is:
+~~~
+				Output = span(Input1,Input2, ... InputN) + Delay 		(EQ 5)
+~~~
+Figure 4 illustrates the concept of how a combinational device behaves in the event domain.
+
+note> 5. ideal means the device has no output delay
+
+centreblock> [FIGURE 4a]
+fig> The fact that the Output window is the disjoint union of the input windows is not shown but is captured in the underlying structure of the Output interval in its internal representation.
+centreblock> [FIGURE 4b]
+fig> 4. The three input and gate shown (above) generates an output given by equation 5. The steps in this calculation are illustrated below. The output event window is the delayed span of the three input event windows.
+
+##### Clocks
+
+A clock net has two events occur on it per period; namely a low to high transition and a high to low transition. For correct simulation, a device in the event domain must be able to differentiate between these two events since it is generally positive edge triggered or negative edge triggered. This is accomplished by adopting a vector representation for clocks in the event domain in the form:
+~~~
+				Clock = [P,N,T]
+~~~
+where `P` is an event window representing the positive edge, `N` is an event window representing the negative edge and `T` is the period of the clock. As shown in figure 5, `P` and `N` are chosen as event windows so that uncertainty due to non-instantaneous transitions is accounted for. The interpretation is that somewhere in the `P` event window the clock net crosses its threshold voltage.
+
+centreblock> [FIGURE 5]
+fig> FIGURE 5. P and N are event windows representing the time interval in which the threshold between logical low and logical high will be crossed. In general, this interval cannot be narrowed to an point interval since the threshold voltage of a clock tends to vary slightly due to operating conditions.
+
+Figure 6 shows a real example of a clock and its representation in the event domain as a vector.
+
+centreblock> [FIGURE 6]
+fig> FIGURE 6. Clock Representation
+
+##### Flip-flops
+
+In the functional domain, the output of a flip-flop is a function of its inputs. In the event domain, the output is a function of the clock only. That is, the output changes in response to the active edge of the clock. Consider a positive edge triggered flip-flop. The output event window is calculated as:
+~~~
+				Q = Clock(P) + Delay									(EQ 6)
+~~~
+where `Q` is the output event window, `Clock(P)` is the event window for the rising edge of the clock and `Delay` is some interval delay associated with the flip-flop.
+
+<#TableOfContents>
+
+#### Modelling Timing Requirements
+
+##### Timing Verification of flip-flops and Latches
+
+The setup and hold times of a flip-flop specify an interval surrounding the active clock edge in which the input must be stable. (see figure 7) This region is the *hazard window* of the flip-flop and it is calculable from the active clock edge event window and the setup and hold parameters of the flip-flop as shown in the circled region of figure 8. An event occurring on the input of a flip-flop during the hazard window constitutes a timing violation. This concept is also illustrated in figure 8.
+
+centreblock> [FIGURE 7]
+fig> FIGURE 7. A hazard window defines the region where the input(s) to a flipflop must be stable to avoid a setup or hold violation.
+
+centreblock> [FIGURE 8]
+fig> FIGURE 8. CLOCK(P) is the event window for the rising edge of the clock shown at the top of this figure. Arbitrary setup and hold times and the rising edge clock window combine to form the flip-flop's hazard window. The hazard window is the time interval over which the device could malfunction if the input changes. Dl and D2 are two possible input event windows that would cause a timing violations. D3 is an input that if safe because does not intersect the hazard window at any point.
+
+The process of timing verification reduces to the problem of proving that certain event windows do not intersect; For example, proving that the D input event window of a flip-flop and that flip-flop's hazard window do not overlap verifies the setup and hold requirements of that device. This simplification is useful but complicated by the fact that it is not possible to verify the timing correctness of an individual device without knowledge of the circuitry surrounding it. This is because the conditions that cause timing failure at a particular device could be precluded by some relationship between events at some other part of the circuit. A good example of this is common skew. Figure 9 is an example of a conceptual circuit where an apparent timing violation is precluded by a common delay.
+
+centreblock> [FIGURE 9]
+fig> FIGURE 9. Device X is a generic synchronous component with the simple timing requirement that the event on "In" occur before the event on "Trigger". By inspection of the inputs, it is clear that this condition is met since all possible values for X are less than Y. However, looking out from the input of Device X one sees "In" = X' = [1,5] and "Trigger" = Y' = [3,7]. From this vantage point it appears that the event windows overlap and a timing violation could occur. This "illusion" of a timing violation is due to the common delay element both signals encounter. This example illustrates how timing verification can not be done with out a knowledge of the entire circuit.
+
+At any device in a circuit there is a mathematical equation relating the input event window to the output event window. Hence this same equation relates the net "connected" to the input of the device to the one connected to the output. Generally, nets serve as outputs from one device and inputs to one or more other devices. As a result of this property, there exists a multitude of pair wise *relations* between individual nets where the set of these relations form a network of equations completely describing the interrelation between all nets in a circuit. This system of equations, called a constraint network, relates either directly or indirectly every event window on every net in the circuit.
+
+Consider once again the conceptual circuit of figure 9. The circuit is described by the following system of equations:
+~~~
+				Delay == [1,4]											(EQ 7)
+				X == [0,1]												(EQ 8)
+				Y == [2,3]												(EQ 9)
+				X' == X + Delay											(EQ 10)
+				Y' == Y + Delay											(EQ 11)
+				In == X'												(EQ 12)
+				Trigger == Y'											(EQ 13)
+~~~
+For timing verification, one must prove the `In` event always occurs before the `Trigger` event. In the event window model this is:
+~~~
+				RTP:In < Trigger										(EQ 14)
+~~~
+
+Hence the problem of timing verification has been reduced to proving equation 14 given equations 7 through 13.
+
+One way of approaching this problem is to use a proof by contradiction. That is, assume `{Trigger <= In}` and find some contradiction arising in the original set of equations as a result of this assumption. So, assuming `{Trigger <= In}`, therefore:
+~~~ pseudocode
+  i				Y' <= X'													(EQ 11, EQ 12)
+  
+ ii				Y + Delay <= X + Delay									(EQ 9, EQ 10)
+ 
+iii				Y <= X
+
+ iv				[2,3] <= [0,1]											(EQ 7, EQ 9)
+~~~
+Now deduction `iv` is clearly false, so it is proven that `{In < Trigger}` by contradiction. Hence the timing correctness of the circuit in FIGURE 9 is proven.
+
+<#TableOfContents>
+
+#### Constraint Logic Programming
+
+A realistic circuit may have thousands of devices in it. The constraint network that describes such a large circuit could contain tens of thousands of equations. Timing verification would involve one or more tests for every synchronous device which could thus be thousands of proofs. With such a large constraint network, each individual proof could be quite involved. Fortunately, BNR Prolog with Constraint Logic Programming (CLP) is ideal for a problem of this nature. (see: "Programming in CLP(BNR)"" by W.J. Older and F. Benhamou, 1993) The following examples serve to illustrate the theorem proving capabilities of CLP.
+
+Once again, consider the constraint network containing the following equations:
+~~~
+				D == [1,4]												(EQ 15)
+				X == [0,1]												(EQ 16)
+				Y == [2,3]												(EQ 17)
+				X' == X + D												(EQ 18)
+				Y' == Y + D												(EQ 19)
+				I == X'													(EQ 20)
+				T == Y'													(EQ 21)
+~~~
+Consider the scenarios that may arise when adding new information to a constraint network. First, consider the addition of this equation into the network:
+~~~
+				X == [0,5]												(EQ 22a)
+~~~
+Since it is already known by equation 16 that `X `is some value between `0` and `1`, equation 22a offers no new information about the system. However, the addition of:
+~~~
+				X == [0.2,0.8]											(EQ 22b)
+~~~
+to the network would be non-redundant information, giving a tighter bound on the possible value of `X` and thus a tighter bound on any variable derived from `X`, (such as `X'` in equation 18). The addition of equation 22b to the constraint network narrows the interval `X` as well as other intervals that are related to `X`.
+
+The addition of the equation:
+~~~
+				X == [0.5,3]											(EQ 22c)
+~~~
+is an interesting case. It is known from equation 16 that `X` is some number between 0 and 1. But equation 22c states that `X` is some number between 0.5 and 3. Therefore, it can be concluded that `X` is actually some number between 0.5 and 1. That is, `X == [0.5,1]` is the only interval value for `X` that is consistent with equations 16 and 22c.
+
+Finally, consider the addition of the equation:
+~~~
+				X == [2,4]												(EQ 22d)
+~~~
+to the constraint network. Equation 22d is now in conflict with equation 16. That is, it is impossible for `X == [2,4]` given the information already in the constraint network, (specifically `EQ 16`: `X == [0,1]`). Attempting to insert equation 22d into the constraint network would cause a failure in a Prolog sense. i.e., the query:
+~~~
+			?- X:real(2,4). % X:real(2,4) means X==[2,4]				(QU I)
+~~~
+would fail. There is an interesting and important ramification of this. The failure of the above query actually implies that the constraint network contains information proving that `{X'<>[2,4]}`; that is, the value of `X` cannot lie in `[2,4]`. (In this case the proof is simply equation 16). CLP does not allow the addition of any equation into the constraint network if it is inconsistent with the equations already there. An equation is only admissible into a constraint network if some or all other variables can be narrowed such that there exists at least one solution to all equations, including the new one. Hence, if CLP does not accept any particular equation, then there exists some proof in the constraint network that the opposite relationship holds true. For example, the failure to insert:
+~~~
+				f(x,y,z) = g(x,y,z)										(EQ 23e)
+~~~
+into some constraint network constitutes proof that:
+~~~ pseudocode
+				f(x,y,z) <> g(x,y,z)										(EQ 23f)
+~~~
+It is this property of CLP that is exploited in the static timing analyzer.
+
+Recall that the timing correctness of the circuit in FIGURE 9 modelled by the above constraint network could be verified by proving that:
+
+centreblock> I< T, (which appeared as: In< Trigger)
+
+Having done this proof earlier, it is known that there is information in the constraint network proving this statement. Since \I<T\, it is impossible that I>=T. Hence, the Prolog query:
+~~~
+			?- I >= T.													(QU II)
+~~~
+fails, and of course the Prolog query:
+~~~
+			not(I >= T).												(QU III)
+~~~
+succeeds. In itself, the success of query III constitutes proof that I<T and thus establishes the timing correctness of the device under scrutiny as explained in [Buffers, inverters, and other single input devices].
+
+The mechanism behind the theorem proving power of CLP(BNR) is beyond the scope of this report but is described in chapter 10 of "Constraint Logic Programming: Selected Research". (see [References]).
+
+<#TableOfContents>
+
+### Implementation
+
+The theory and strategy for building a static timing analyzer was outlined in the previous section. This section describes how the program is actually constructed and how it works.
+
+#### Event Networks
+
+An *event network* is a circuit description formatted such that it is a syntactically correct Prolog clause. This means that it is both a high level circuit description, similar to a net list, *and* an executable Prolog program. Thus, with the right engine behind it, this is a system where a circuit schematic can be easily mapped to an event network which can be subsequently executed as a Prolog program where success implies that the circuit is free of any timing violations. The mechanism behind this is the engine of the static timing analyzer and will be described shortly.
+
+In an event network, every net in a circuit is identified by a unique Prolog *net variable*. When the event network is interpreted as a Prolog clause, the net variables will be instantiated to interval values representing event windows. Each  term in an event network corresponds to an instance of a device in a circuit. A term identifies which nets the inputs and outputs of the device it represents are connected to. It also specifies delay parameters, timing constraints, and correlation information associated with the particular device. A term is in the form of a Prolog clause header and the above information is represented as parameters. FIGURE 10 shows the event network derived from the simple circuit shown adjacent to it. Note the similarity between the View logic net list and the event network for the circuit. This similarity makes it easy to filter a net list to an event network.
+
+centreblock> [FIGURE 10]
+fig> FIGURE 10. Transformation from physical circuit description to event network.
+
+The static timing analyzer incorporates a filter program which translates a Viewlogic net list into an event network. This allows one to go directly from editing a schematic on Viewlogic to analyzing it. The filter uses a small knowledge base to recognize devices in a the net list and create the appropriate clause in the event network it builds. This parser-like program produces a text file containing the event network.
+
+<#TableOfContents>
+
+#### Device Library Primitives
+
+The static timing analyzer makes use of a library of device primitives which describe the timing behavior of various circuit components. Every device that may appear in an event network has a corresponding primitive in the device library which details how the particular device behaves in the event domain. Device primitives are Prolog clauses whose parameters are device inputs and outputs (net variables) as well as timing, correlation, and delay information.
+
+Device primitives perform two distinct functions. The first is to relate input events to outputs events according to the nature of the device. This relation manifests itself as a set of mathematical equations relating input event windows to output event windows according to specific delay and correlation parameters. Secondly, a device primitive verifies that the event windows at its inputs do not violate the timing requirements of the device it represents.
+
+A device primitive can be thought of as a "function" in that a caller passes in an input event window, delay and correlation parameters and the primitive "returns" an output event window as well as verifying the input event window against the timing requirements of the device.
+
+Consider the simplified device primitive for an inverter:
+~~~
+			inverter(Input, Output, Delay) :-
+				Output == Input + Delay.
+~~~
+The clause has parameters for an input event window, an output event window and a delay. The clause calculates the output event window given the input event window and the delay. When some event network is executed as a Prolog program, an instance of an inverter would result in this particular primitive being "called". The `Delay` variable would be instantiated to the value specified in the event network. When the primitive had been executed, then the two net variables associated with the inverter would be related by the equation contained within the inverter primitive.
+
+The purpose of the device primitives is to relate all the net variables to each other by means of a system of equations. Once an event network has been processed, then all of its net variables will be related to each other by means of the equations contained in the individual device primitives, thus accomplishing the task.
+
+Recall the relation between output and input for a buffer:
+~~~
+				Output = Input + Delay									(EQ 24)
+~~~
+Since a buffer in an asynchronous device, it has no timing requirements, hence the device
+primitive for a buffer is just:
+~~~
+			buffer([Input], [Output], [Max_Delay]) :-
+				Min_Delay is 0.1 * Max_Delay,
+				Delay:real(Min_Delay, Max_Delay),
+				Output == Input + Delay.
+~~~
+The delay could have been passed in as an interval, but since manufactures generally specify a maximum delay, the above method is better. This device primitive is a simplified version of the real one, which is given in [Correlation] after the introduction of correlation factors.
+
+The primitive for a 3 input combinational device is:
+~~~
+			comb([In1, In2, In3], [Output], [Max_Delay]) :-
+				Min_Delay is 0.1 * Max_Delay,
+				Delay:real(Min_Delay,Max_Delay),
+				S == span(In1,In2,In3),
+				Output == S + Delay.
+~~~
+This primitive implements the equations for a three input combinational device as explained in [Combinational Devices].
+
+The primitive for a D flip-flop is:
+~~~
+			fdrd([D, [Clk_P, Clk_N, Clk_Period], [Q], [Setup,Hold,Max_Delay]) :-
+				Min_Delay is 0.1 * Max_Delay,
+				Delay:real(Min_Delay, Max_Delay),
+				Output == Clk_P + Delay ,
+				%	Create hazard window
+				Setup_window:real(O,Setup),
+				Neg_hold is -1 * Hold,
+				Hold_window:real(Neg_hold,O),
+				Hazard window == Clk_P + Setup_window + Hold_window,
+				%	Timing Verification
+				verify(D, Hazard_window).
+~~~
+The function for verify:
+~~~
+			verify(Input, Hazard_window) :- not(Input == Hazard_window).
+			verify(_, _) :- write('TIMING VIOLATION').
+~~~
+The function for verify exploits the CLP to prove that a timing violation can never occur. If it can not prove this (first clause), backtracking will cause the execution of the second clause.
+
+<#TableOfContents>
+
+#### Flow
+
+The event network and the device libraries serve as the tools to construct a constraint network describing the circuit's timing behavior. This is done in the following manner:
+
+The static timing analyzer executes the event network deferring the execution of the timing verification tests until such time as the constraint network contains a complete set of circuit description equations. As explained in [Modelling Device Behavior], it is not possible to verify the timing correctness of an individual device with out knowledge of the surrounding circuitry. In many cases, timing cannot be analyzed without knowledge of the entire circuit. For this reason it is impossible to verify the timing correctness of devices in the sequential order they appear in the event network. This is why timing verification must be deferred until the relationship between all devices in the circuit is known.
+
+Executing the event network directly would result in device primitives conducting their timing tests with insufficient knowledge of the circuit to yield correct results. It may be that the relationship between two event windows brought about by one device may preclude the possibility of violation occurring at an other device. If those devices were processed in the "wrong" order, the system would detect a false timing violation. For this reason it is important to establish a complete picture of the relationship between devices; that is, build the entire constraint network, before conducting any timing tests. This is why the event network, which is in fact an executable Prolog clause, is not queried directly.
+
+The strategy is to generate a set of equations, the constraint network, describing the interrelation between all event windows. Once the entire set of equations is generated, then there is enough information to determine if timing violations exist at any particular device.
+
+The static timing analyzer processes each device in the event network in sequence. Recall that each device in the event network description has a corresponding library primitive which relates all the devices parameters such that it can construct an equation relating an output event window to its input event window taking into account delay and correlation parameters. Recall also that each device primitive contains the timing requirements for the particular device. The processing of each device in the event network is really just a call to the appropriate device library routine. The device primitive that is called will contain the equation(s) relating the input event window to the output event window. The static timing analyzer executes these equations, resulting in the equation(s) being placed into the constraint network. The device, depending on its nature, may or may not contain timing tests. Should the analyzer encounter one or more timing tests, they would be placed on a list for later execution.
+
+When this process is completed, the constraint network will be a system of equations relating either directly or indirectly every event window on every net in the circuit. Thus the foundation exists to determine if the timing requirements of any device could be violated.
+
+The constraint network has a complete knowledge of the relationship between all event windows. Timing tests are done be asserting the condition for failure and allowing the CLP theorem proving mechanism to check if this condition can occur given the configuration specified in the constraint network. For example, consider a device which requires input signal A to arrive before input signal B. If the circuit is designed in such away that this requirement can never be violated, then it can somehow be derived from the system of the equations in the constraint network that the event on the A input of the device always occurs before the event on the B input. i.e. it can be proven that:
+~~~
+				A < B													(EQ 25)
+~~~
+If the required timing condition cannot be mathematically proven from the equations in the constraint network, then it is impossible to conclude that the condition can not arise during circuit operation. The problem of timing verification reduces to manipulating an extremely large set of equations (the constraint network) to prove some specific mathematical relationship, (a specific timing requirement). (This process was described in more detail in [Combinational Devices].)
+
+So the method for verifying individual device timing requirements is to assert the condition(s) for failure, and allow the CLP theorem prover to attempt to find a contradiction resulting from this assertion. If the theorem prover finds a contradiction then it can be concluded that it is impossible under any circumstances for this timing requirement to be violated. Should the theorem prover fail to find a contradiction, then there may exist a possible sequence of events that could cause a timing malfunction in the device under scrutiny. FIGURE 11 shows the flow chart for the program.
+
+centreblock> [FIGURE 11]
+fig> FIGURE 11. A Viewlogic net list is filtered through a front end parser to produce an event network. An interpreter, referencing the device libraries, reads through the event network, constructing a constraint network while extracting the setup and hold tests for later execution. Once the entire constraint network is constructed, the timing tests are individually executed by the Verifier which exploits the theorem proving capabilities of CLP(BNR) to determine the results.
+
+<#TableOfContents>
+
+### Correlation
+
+#### Qualitative Description of Correlation
+
+Due to the unpredictable effects of operating conditions, output delays in synchronous devices are represented as intervals. However, operating conditions tend to have the same affect on all parts of the circuit. This implies that the interval delays are not all independent of each other. That is, if one output delay falls at the lower end of its spectrum then all other delays will fall near the lower end of their spectrum since operating conditions are the same throughout the circuit.
+
+However, there will always be a slight difference between correlated delays due to factors such as slight manufacturing differences.
+
+Delays tend to *track* each other to a high degree but there is always local variation (noncorrelation) at each individual device. Device delays can be seen as a combination of two interval components: A global correlation factor and a local variation factor: the former modelling delay tracking and the later modelling local deviations that occur independently at each device.
+
+#### Quantitative explanation of Correlation
+
+Correlation is the quantified relationship between device delays serving to remove the relative uncertainty of delays in a circuit. One way of expressing correlation is as a percentage. A circuit with 90% correlation means that 90% of the uncertainty modelled by a given delay interval is caused by factors having the same effect on all parts of the circuit. Thus only 10% of the delay is independent of other delays in the circuit. The simplest implication of this is that if one device's output delay is known precisely then all other delays can be deduced to be with in 10% (p.u.) of that value. This is illustrated in FIGURE 12, case A.
+
+centreblock> [FIGURE 12]
+fig> FIGURE 12. Case A and case B illustrate how correlation relates delays in a circuit. In case A, Delay_(n1)_ has (somehow) been mapped to a precise value. Correlation information allows one to deduce that since Delay_(n1)_ is known, much of the uncertainty of Delay_(m1)_ is removed. Only the uncertainty due to local variation factors remains in Delay_(m1)_.
+
+	In Case B, Delay_(n2)_ has been narrowed to a small interval, but not a precise value. Hence other correlated delays in the circuit such as Delay_(m2)_ can be narrowed to a *certain extent*.
+
+In general, correlation information allows one to narrow the interval of uncertainty for some delay if one has narrowed some other correlated delay in the circuit. This creates a whole new set of relationships between delays an event network. The result is a more complicated *non-linear* system of equations describing the circuit.
+
+<#TableOfContents>
+
+#### Modelling Correlation
+
+Recall that output delays are specified by a minimum/maximum range, where the minimum is some fraction of the maximum:
+centreblock> pseudocode
+		Delay == \[\D_(min)_,D_(max)_] where D_(min)_ = C * D_(max)_, C<1
+The Delay can be expressed in the form:
+centreblock> pseudocode
+		Delay == D_(max)_ * [C,1]
+From above, the per unit delay of any device is:
+centreblock> pseudocode
+		Delay_(pu)_ == [C,1]
+It is necessary to model per unit delays as a product of two intervals, a global correlation factor and a local variation factor. The global correlation factor `M` should represent the component of a delay that is totally correlated to the other delays in the circuit. The local variation factor `V` should represent the component of the delay that is independent of the rest of the circuit. So, let
+centreblock> pseudocode
+		Delay_(pu)_ == M * V == [C,1]
+Let &lamda represent the percentage of a delay interval that is independent of the rest of the delays in the circuit. (For hardware designers, &lamda is derived from the correlation percentage parameter &Gamma, according to: &lamda=1-&Gamma.)
+
+&lamda represents the percentage of a delay interval that is independent of the rest of the delays in the circuit. So, if `V` is chosen such that
+centreblock> pseudocode
+		V == \[\1-&lamda,1+&lamda]
+then:
+centreblock> pseudocode
+		Delay_(pu)_ == M * V == M * \[\1-&lamda,(1+&lamda)] == [C,1]
+so,
+centreblock> ..am
+		M_(lower) = C/(1-lamda)
+and,
+centreblock> ..am
+		M_(upper) = 1/(1+lamda)
+So it can be stated that:
+centreblock> ..am
+		Delay_(pu) = M xx V = [C/(1-lamda),1/(1+lamda)] xx 1/(1+lamda)
+Finally,
+centreblock> ..am
+		Delay = D_(max) xx M xx V
+where,
+centreblock> ..am
+		M = [C/(1-lambda),1/(1+lambda)]
+and,
+centreblock> ..am
+		V = [1-lambda,1+lambda]
+
+#### Sample Calculation
+
+Correlation becomes an important factor when devices are operated at speeds close to the limits of the technology they are built on. The following example illustrates a circuit which can only be verified with a knowledge of correlation factors.
+
+centreblock> [FIGURE 13]
+fig> FIGURE 13. Circuit with 90% Correlation 
+
+Consider the circuit in FIGURE 13. Analysis with *no correlation* (ignoring correlation) yields the following:
+			Clk_in == CLK(P) + Delay2 == [10,10] + [0.5,5] == [10.5,15]
+			
+			D = X + Delay1 = [5,6] + [0.6,6] == [5.6,12]
+The setup timing requirement expressed mathematically is:
+			D < Clk_in - 1,
+This requirement is not assured given that `D` overlaps `Clk_in`. So ignoring correlationbetween delays, there appears to be a timing violation in this circuit. But if one does this analysis taking into account correlation, the apparent timing violation disappears:
+			M = [0.1/0.9,1/1.1] == [0.11,0.91]    (EQ 26)
+			Delay1 == [0.6,6] == D_(max)_ * M * V == 6 * M * [0.9,1.1] == [5.4,6.6] * M
+			Delay2 == [0.5,6] == D_(max)_ * M * V == 5 * M * [0.9,1.1] == [4.5,5.5] * M
+			
+			Clk_in == CLK(P) + Delay2 == [10,10] + [4.5,5.5] * M
+			D = X + Delay1 = [5,6] + [5.4,6.6] * M
+The latest the `D` event can occur is:
+			D = 6 + 6.6*M
+and the earliest `Clk_in` can occur is:
+			Clk_in = 10 + 4.5*M
+			RTP:D < Clk_in -1
+			assume:D >= Clk_in -1
+			6 + 6.6 * M >= 10 + 4.5 * M -1
+			2.1 * M >= 3
+			M >= 1.4
+
+but it is known that `M == [0.11 ,0.91]    (EQ 26)`, so this constitutes a proof by contradiction for the worst case. Thus there is in fact no timing violation.
+
+This example demonstrates the need to take correlation into account when doing static timing analysis.
+
+<#TableOfContents>
+
+#### Implementation of Correlation
+Recall that the delay at any device can be modelled by the equation:
+centreblock> pseudocode
+		Delay == D_(max)_ \*\ M * V
+The precise value of `M` is indeterminable except when the circuit being modelled is actually constructed and running. But it is important to realize that what ever precise value `M` will assume, it will be the exact same value for all delays in the circuit. For this reason every delay equation in the constraint network sees the same `M`. However, each individual delay has unique instance of variable `V`, the local variation factor.
+
+Figure 14 shows a conceptual picture of how the constraint network appears with the addition of the `M` variable. Note how the "global" variable `M` "links" all delays via a common node. This captures correlation at the expense of a more complex constraint network.
+
+centreblock> [FIGURE 14]
+fig> FIGURE 14. The "Global" variable `M` links together all the delays in a constraint network 
+
+Each device library primitive must "see" a global `M` and create a local instance of `V`. This is accomplished by passing the variable `M` into each device primitive so that the equation it injects into the constraint network is linked to one common `M` node. Below is the complete code for any single input/single output device:
+~~~
+			general_buffer([Input], [Output],K,M) :-					(5.H)
+				loc_var_factor(V),										(5.1)
+				Delay := K * M * V,										(5.2)
+				Output == Input + Delay.								(5.3)
+~~~
+The clause header `((5.H))` has input parameters for the global `M` variable and allows the caller to specify a maximum delay (`K`). Line `5.1` creates a new instance of a local `V` variable via a call to `loc_var_factor` which simply instantiates `V` to be `{\[\1-&lamda,1+&lamda]}`. This instantiation is done by an external function call so that `V` can be generated dynamically. `loc_var_factor` is a Prolog clause that is created using the base clause **`asserta`** at run time. Lines 5.2 and 5.3 calculate the output and inject two new eguations into the constraint network which are linked to the "global" `M` variable.
+
+This primitive demonstrates how correlation is easily incorporated into the device library primitives.
+
+<#TableOfContents>
+
+### Empirical Performance Results
+
+The static timing analyzer runs on an HPUX 9000/720, 32 MB RAM system. With the correlation feature turned off, the analysis time scales linearly with the number of devices in the circuit. The performance is *O(n)*.
+
+With the correlation feature turned on, the system performance time scales quadratically with the number of components in the circuit: *O(n^2^)*. The quadratic scaling with correlation is expected because of the introduction of the variable `M` into the constraint network. Since this `M` is linked to almost every equation in the network, the paths the system can take when narrowing variables increases substantially. This accounts for the quadratic performance time.
+
+Table 1 contains absolute analysis times for the system:
+
+fig> TABLE 1. Verify time in seconds for various correlation percentages
+.tsv
+	**Number of Gates**	**No Correlation**	**&lamda=10%,(&Gamma=0.9)**	**&lamda=20%,(&Gamma=0.8)**	**&lamda=30%,(&Gamma=0.7)**	**&lamda=40%,(&Gamma=0.6)**
+	170					6.6					16.5						18.8						20.2								22.4
+	510					19.7				130							159.8						165.6	 
+	850					32.8				379.1						432.0						 	 
+	1700				63.8				 							 							 	 
+	3400				121.2				 							 							 	 
+
+<#TableOfContents>
+
+### Concluding Remarks
+
+#### The Program
+
+The source code for the static timing analyzer is under 5 pages not including the parser. The critical code is matter of a few lines. The static timing analyzer is also capable of handling multiple phase related clocks as well as the correlation in pulse width distortion.
+
+#### Limitations
+
+The event network model used for mathematical modelling has no regard for circuit functionality on the premise that the functionality of a circuit should not affect its timing correctness. However, it appears that there are special cases when this assumption is invalid. This means that there will be times when the event network method of analysis will flag down a timing violation that in fact could never occur given the circuit's functionality. Note, the converse is not true. This method will *never* miss any timing violation due to the assumption that functionality and timing are independent. This means that if a circuit is verified by the event network method of analysis then it will always function consistently (free of timing violations, race states, etc.) regardless of the function of any device or any initial conditions.
+
+The static timing analyzer has problems dealing directly with unconventional design choices. For example, passing a clock through a combinational gate directly implies that functionality is being intertwined with timing. The event network method can simply not handle this.
+
+One way of dealing with this is to design a number of special case primitives which could be called when the static timing analyzer encountered a configuration it could not handle by event network modelling. Such modules would take alternate approaches to the problem and return results for localized areas of the circuit. The program would rely on event network modelling for most of the analysis and only use special primitives for localized areas causing complications.
+ 
+#### Other Additions
+ 
+It worthwhile to look at manipulating the constraint network and the timing requirements in a slightly different manner so as to calculate the operational limits of the design. For example, it would be useful to be able to calculate the maximum clock frequency a circuit can be driven at given a constraint network describing it.
+ 
+It would also be useful to study the "heuristic" use of correlation. This means that the program attempts to verify the circuit ignoring correlation and only does a correlated analysis if a certain test cannot be verified in the initial attempt. If this could be done, it would bring the average case run time very close to linear and the worst case run time would be quadratic.
+ 
+#### Future Development
+
+CLP(BNR) provides a method for solving a traditionally difficult problem in a simple and elegant manner. The technology could be used as basis for a fully operational static timing analyzer. Some key issues are:
+- The basic analysis method would do most if not all of the analysis; but there would have to be (many) special routines to deal with unconventional design scenarios. These would mostly be the cases when functionality and timing were inseparable in certain isolated parts of the circuit.
+- The system would require a robust front end parser which could take a net list circuit description and create an event network. This would inevitably be a large program that would probably have to decipher physical circuit descriptions from a high level design language
+- The system would have to return well formatted information to the designer, most likely via some graphical user interface. The event network model would adapt well to tracing backwards through a circuit to determine the cause of timing violations that were detected in the circuit.
+
+<#TableOfContents>
+
+### References
+
+W. Older, Delay Networks and Intervals, 1991.
+
+D. Brown, Timing Verification, 1993.
+
+F. Benhamou and W. Older, Applying Interval Arithmetic to Real. Integer and Boolean Constraints, submitted to JLP, 1993.
+
+J. G. Cleary, Logical Arithmetic, Future Computing Systems, Vol2, No2, p.p. 125-149, 1987.
+
+J. H. M. Lee and M. H. Van Emden, Adapting CLP(R) to Floating Point Arithmetic, in Proceedings of the Fifth Generation Computer Systems Conference, Tokyo, Japan, 1992.
+
+R.E. Moore, Interval Analysis, Prentice Hall, 1966.
+
+W. Older and A. Vellino, Extending Pro log with Constraint Arithmetic on Real Intervals, in Proceedings os the Canadian Conference of Electrical and Computer Engineering, 1990.
+
+W. Older and A. Vellino, Constraint Arithmetic on Real Intervals, to appear in Constraint Logic Programming: Selected Research, MIT Press, 1993.
+
+&
+	@import 
+		../MyWordDocStyle.mmk
+		/BNRProlog-Papers/myword/pkgs/asciimath.mmk
+		/BNRProlog-Papers/myword/pkgs/tsv.mmk
+		/BNRProlog-Papers/myword/pkgs/toc.mmk
+	
+	[FIGURE 1]  <- image StaticTimingAnalyzerFig1.png style="width:50%"
+	[FIGURE 2]  <- image StaticTimingAnalyzerFig2.png style="width:65%"
+	[FIGURE 3]  <- image StaticTimingAnalyzerFig3.png style="width:50%"
+	[FIGURE 4a] <- image StaticTimingAnalyzerFig4a.png style="width:30%"
+	[FIGURE 4b] <- image StaticTimingAnalyzerFig4b.png style="width:60%"
+	[FIGURE 5]  <- image StaticTimingAnalyzerFig5.png style="width:75%"
+	[FIGURE 6]  <- image StaticTimingAnalyzerFig6.png style="width:75%"
+	[FIGURE 7]  <- image StaticTimingAnalyzerFig7.png style="width:70%"
+	[FIGURE 8]  <- image StaticTimingAnalyzerFig8.png style="width:75%"
+	[FIGURE 9]  <- image StaticTimingAnalyzerFig9.png style="width:60%"
+	[FIGURE 10] <- image StaticTimingAnalyzerFig10.png style="width:75%"
+	[FIGURE 11] <- image StaticTimingAnalyzerFig11.png style="width:80%"
+	[FIGURE 12] <- image StaticTimingAnalyzerFig12.png style="width:60%"
+	[FIGURE 13] <- image StaticTimingAnalyzerFig13.png style="width:75%"
+	[FIGURE 14] <- image StaticTimingAnalyzerFig14.png style="width:80%"
+	
+	[Modelling Device Behavior] <- link #toc4Modelling_Device_Behavior
+	[Buffers, inverters, and other single input devices] <- link #toc5Buffers,_inverters,_and_other_single_input_devices
+	[Combinational Devices] <- link #toc5Combinational_Devices
+	[Correlation] <- link #toc3Correlation
+	[References] <- link #toc3References
+	
+	.TOC .. <- toc 3 5
+	title ..       <- <h1 class=_centre>
+	centreblock> .. <- <div class=_centre>
+	note> ..       <- <div class=my_aside> prose
+	fig> ..        <- <p class=my_fig> prose
+	pseudocode ..  <- <pre class=my_pseudo> prose
+	..am ..        <- <math display=block> asciimath
+	`{ .. }`       <- <code class=my_pseudo>
+	#{ .. }#       <- <math display=inline> am
+	^ .. ^         <- <sup>
+	_( .. )_       <- <sub>
+	
+	&lamda <- &lambda;
+	&Gamma <- <span style='font-family:Times'> is &Gamma;
+	<=     <- &leq;
+	>=     <- &geq;
+	<>     <- &ne;
+	
+	@css
+		._centre {text-align: center;}
+		div.eg, div.demo {margin: 4pt 0;}
+		div.my_aside {font-size:smaller}
+		p.my_fig {text-align: center; font-size:smaller; font-weight:bold; margin-left:10%; margin-right:10%}
+

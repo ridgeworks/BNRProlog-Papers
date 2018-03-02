@@ -32,6 +32,8 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	
 	- [Computing Time Intervals Logically], André Vellino & William J. Older, presented at Society for Exact Philosophy meeting in 1993
 	
+	- [Design and Implementation of a Static Timing Analyzer using CLP(BNR)], Tammer Kamel, CRL Internal, 1993
+	
 **Other Applications**
 1..
 	- [Programming in Logic], André Vellino,  CRL Internal, 1990
@@ -59,6 +61,7 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	[Operator Precedence Grammars] <- link docs/OpPrecedenceGrammars/OpPrecedenceGrammars.html
 	[Clause Indexing and Calls] <- link docs/ClauseIndexing/ClauseIndexing.html
 	[Linkages] <- link docs/Linkages/Linkages.html
+	[Design and Implementation of a Static Timing Analyzer using CLP(BNR)]  <- link docs/StaticTimingAnalyzer/StaticTimingAnalyzer.html
 	[Solving linear, min and max constraint systems using CLP based on relational interval arithmetic] <- 
 		link https://www.sciencedirect.com/science/article/pii/S0304397596001983?via=ihub
 	[CLP(F) and Constrained ODEs] <- link https://www.researchgate.net/profile/Tim_Hickey/publication/2505442_CLPF_and_Constrained_ODEs/links/54b7bc530cf2e68eb2804650/CLPF-and-Constrained-ODEs.pdf
