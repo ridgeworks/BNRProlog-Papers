@@ -1626,29 +1626,29 @@ Pure boolean operations (those with all boolean arguments) are handled slightly 
 eg
 	/* names of operations -actual names have '$' prepended */
 
-	interval operation(add).
-	interval=operation(begin_tog) .
-	interval operation(cos).                % for X in [-pi,pi]
-	interval-operation(equal).
-	interval-operation(finish_tog).
-	interval-operation(greatereq).
-	interval-operation(higher).             % > (not sound)
-	interval-operation(inf).                % min
-	interval=operation(j_less).             % ternary >=
-	interval operation(k_equal).            % ternary ==
-	interval-operation(lub).                % max
-	interval-operation(mul).
-	interval-operation(narrower).           % sub interval
-	interval-operation(or).                 % alias choose
-	interval-operation(pow_odd).            % odd positive powers
-	interval-operation(qpow even).          % even pos powers
-	interval-operation(rootsquare).
-	interval-operation(sin).                % for X in [-pi,pi]
-	interval-operation(tan).                % for X in [-pi/2,pi/2]
-	interval-operation(unequal).
-	interval-operation(vabs).               % abs
-	interval-operation(wrap).               % folds real line into [-Y,Y]
-	interval=operation(xp).                 % exp/ln
+	interval_operation( add).
+	interval_operation( begin_tog) .
+	interval_operation( cos).                % for X in [-pi,pi]
+	interval_operation( equal).
+	interval_operation( finish_tog).
+	interval_operation( greatereq).
+	interval_operation( higher).             % > (not sound)
+	interval_operation( inf).                % min
+	interval_operation( j_less).             % ternary >=
+	interval_operation( k_equal).            % ternary ==
+	interval_operation( lub).                % max
+	interval_operation( mul).
+	interval_operation( narrower).           % sub interval
+	interval_operation( or).                 % alias choose
+	interval_operation( pow_odd).            % odd positive powers
+	interval_operation( qpow even).          % even pos powers
+	interval_operation( rootsquare).
+	interval_operation( sin).                % for X in [-pi,pi]
+	interval_operation( tan).                % for X in [-pi/2,pi/2]
+	interval_operation( unequal).
+	interval_operation( vabs).               % abs
+	interval_operation( wrap).               % folds real line into [-Y,Y]
+	interval_operation( xp).                 % exp/ln
 
 	wrap ( zl, zh, xl, xh, yl, yh) :-
 		% Z:=wrap(X,C) C(=yh) numeric, C>O, folds X into interval [-C,C]
@@ -1659,7 +1659,7 @@ eg
 		vh <- lb( xh/ul), vh <- round(vh),
 			% use same rounding at both ends so points always answer Yes
 		(vl?vh ->[ Dif, Same, Error]),
-		  Dif: ul <-- (yh), % just update Z if needed
+		  Dif: ul <- -(yh), % just update Z if needed
 			(zl?ul -> [Uzl2,Dif2,Dif2]),
 			  Uzl2: zl <- ul,
 			Dif2: (zh?uh ->[Exit,Exit,Uzh2]),
@@ -1672,7 +1672,7 @@ eg
 				(xh?vh -> [Same2,Same2,Uxh]),
 				  Uxh: xh<- vh, goto Same2,
 			  Uzh: zh <- vh,
-		  Same2: (zl ?vl -> [ Uzl, Exit, MUxl]),
+		  Same2: (zl?vl -> [ Uzl, Exit, MUxl]),
 			  MUxl: vl <- lb( zl + ul),
 				(xl?vl -> [Uxl,Exit, Exit]),
 				  Uxl: xl<- vl, goto Exit,
@@ -1688,7 +1688,7 @@ eg
 		B: (xh?zl ->[Done, Eq2, Exit]),
 		  Eq2: ( zl?zh ->[ Eq22, XL, Fail]),
 			  XL: xh<- prev(xh), goto Done,
-		  Eq22: (xl ?xh -> [ Exit, ZR, Fail]),
+		  Eq22: (xl?xh -> [ Exit, ZR, Fail]),
 			  ZR: zl <- next(zl), goto Done,
 		Fail: fail, goto Exit,
 		Done: persistent, goto Exit,
@@ -1759,7 +1759,7 @@ eg
 		% point and X=Z then Y<-1
 		yl?O ->[ iaerror, Mfalse, equal],
 		Mfalse: (yh?O ->[ iaerror, unequal, Test]),
-		Test: ( zl ?xh -> [Test2, Tryeq, Un] ) ,
+		Test: ( zl?xh -> [Test2, Tryeq, Un] ) ,
 		Test2: (xl?zh ->[Exit, Exit, Un]),
 		Un: yh<- 0, goto Exit,
 		Tryeq: (zl?zh ->[Exit,Tryeq2,Exit]),
@@ -1772,7 +1772,7 @@ eg
 			  Chkxl: xl <- zl, goto Ubzx,
 		Ubzx: (zh?xh -> [LtY,LtY, Chkxh)),
 			  Chkxh: zh<-xh, goto LtY,
-		LtY: ( zl ?yl -> [Ubzy, Ubzy, Chkyl]),  % Z =< Y
+		LtY: ( zl?yl -> [Ubzy, Ubzy, Chkyl]),  % Z =< Y
 			  Chkyl: yl <- zl, goto Ubzy,
 		Ubzy: (zh?yh -> [Ubx,Ubx, Chkyh]),
 			  Chkyh: zh<-yh, goto Ubx,
@@ -1782,10 +1782,10 @@ eg
 		Uby: (zh?xl -> [Uyhl, LbZ,LbZ)),
 			  Uyhl: (zh?yh ->[ Uyh,LbZ,LbZ]),
 				  Uyh: yh<- zh, goto LbZ,
-		LbZ: (xl ?yl -> [Usex, Usex, Usey) ),  % Z >= min(xl,yl)
+		LbZ: (xl?yl -> [Usex, Usex, Usey) ),  % Z >= min(xl,yl)
 			  Usex: vl <- xl, goto Chkzl,
 		 	  Usey: vl <- yl, goto Chkzl,
-		Chkzl: (vl ?zl -> [Exit, Exit, Chkzh]),
+		Chkzl: (vl?zl -> [Exit, Exit, Chkzh]),
 			  Chkzh: zl<- vl, goto Exit,
 		Exit: success.
 
@@ -1868,7 +1868,7 @@ eg
 		xl?O -> [Chkxh, XMpos, Xpos],
 				Chkxh: (xh?O ->[ Swx, Swx, Xindef]),
 					Swx: flip(x), goto Xneg,
-		Xneg: (yl ?0 -> [ Chkyhl, ZMneg, Zneg]),
+		Xneg: (yl?0 -> [ Chkyhl, ZMneg, Zneg]),
 				Chkyhl: (yh?O -> [Swyl,Swyl, Yindefl]),
 					Swyl: flip(y), goto Zpos,
 				Yindefl: (zl?O -> [ Chkzhl, MakeYneg,MakeYneg] ),
@@ -1885,7 +1885,7 @@ eg
 				  Chzh2: (zh?O-> [Swz2, Swz2, FZ2]),
 					  Swz2:flip(z), goto MakeXpos,
 						  FZ2: flip(z), goto MpyBY
-			  YMpos: (yh?O -> [Fail, zzero, Ypos]),
+			  YMpos: (yh?O -> [Fail, ZZero, Ypos]),
 			  Ypos: (zl?O -> [Chzh3, MakeXpos,MakeXpos]),
 				  Chzh3: (zh?O->[Swz3,Swz3, MpyBY]),
 					  Swz3: flip(z), goto MakeXneg,
@@ -1922,19 +1922,19 @@ eg
 		MpyBHX: vh<- ub( xh*yh),
 			vh?zh -> [ MUZH, Exit, Backxzh],
 			Backxzh: (xl?O -> [Exit,Exit,BXDivh]),
-				  BXDivh: vh<- ub(zhlxl),
+				  BXDivh: vh<- ub(zh/xl),
 					vh?yh -> [ MUYH, Exit,Exit],
 					
 		MpyBY: vl <- lb(yh*xl),    % Y definite sign, X& Z indefinite
 			vl?zl -> [ Backyzl,MpyBHY,Uzl2],
 				  Uzl2: zl<-vl, goto MpyBHY,
 			  Backyzl: (yl?O -> [MpyBHY,MpyBHY,BYDivl]),
-				BYDivl: vl <- lb(zllyl),
+				BYDivl: vl <- lb(zl/yl),
 					vl?xl-> [ MpyBHY,MpyBHY, Uyl2],
 					Uyl2: xl<- vl, goto MpyBHY,
 			MpyBHY: vh<- ub( xh*yh),
 				vh?zh -> [ MUZH, Exit, Backyzh],
-			  Backyzh: (yl ?0 -> [Exit, Exit, BYDivh]),
+			  Backyzh: (yl?0 -> [Exit, Exit, BYDivh]),
 				BYDivh: vh<- ub(zhlyl),
 					vh?xh -> [ MUXH, Exit,Exit],
 					
@@ -1958,22 +1958,22 @@ eg
 		MpyA: vl <- lb( xl * yl),
 			vl?zl -> [BackLX, Upper, MUZL],
 			BackLX: (yh?O -> [BackLY, BackLY,DivL]),
-				DivL: vl <- lb( zl I yh),
+				DivL: vl <- lb( zl/yh),
 					vl?xl -> [BackLY,BackLY, MUXL],
 					MUXL: xl <- vl, goto BackLY,
 				BackLY: (xh?O -> [Upper,Upper,BLY]),
-					BLY: vl <- lb( zl I xh),
+					BLY: vl <- lb( zl/xh),
 					vl?yl -> [Upper, Upper, MUYL],
 					MUYL: yl <- vl, goto Upper,
 			MUZL: zl<- vl, goto Upper,
 		Upper: vh <- ub( xh * yh),
 			vh?zh -> [ MUZH, Exit, BackHX],
 			BackHX: (yl?O ->[BackHY,BackHY ,DivH]),
-				DivH: vh <- ub( zh I yl),
+				DivH: vh <- ub( zh/yl),
 					vh?xh -> [MUXH, BackHY,BackHY],
 					MUXH : xh<- vh, goto BackHY,
-				BackHY: (xl ?0 -> [Exit, Exit, BHY] ) ,
-					BHY: vh <- ub( zh I xl),
+				BackHY: (xl?0 -> [Exit, Exit, BHY] ) ,
+					BHY: vh <- ub( zh/xl),
 					vh?yh -> [ MUYH,Exit,Exit],
 					MUYH: yh<- vh, goto Exit,
 			MUZH: zh <- vh, goto Exit,
@@ -2105,10 +2105,10 @@ eg
 				(uh?xh -> [Uxh2,Low,Low]),
 				  Uxh2: xh<- uh, goto Low,
 			  Uzh: zh <- uh, goto Low,         % Jun 2
-			Low: (zl ?ul -> [ Uzl, Exit, Uxl]),
+			Low: (zl?ul -> [ Uzl, Exit, Uxl]),
 		MLeft: flip(x), flip(z), vh<- - vl, goto MRight,
 		                            % (flip destroys vh) sin(-x)=-sin(x)
-		MRight: ( xl ?0 -> [ForceR, Pos, Pos ]) ,
+		MRight: ( xl?0 -> [ForceR, Pos, Pos ]) ,
 			Pos: (xl?vh -> [CR,Right,Right]),
 			ForceR: (zl?O -> [Leftbranch, CR, CR]),
 			Leftbranch: ( xl?vl -> [Exit, Low,Low] ),
@@ -2148,7 +2148,7 @@ eg
 			vl<- ub( ln(vl)), vl<- ub( vl/yl), vl<- ub( exp(vl)),
 			vl<- - vl,
 			(vl?xl -> [CUzl, Ub, Uxl]),
-			CUzl: (xl ?0 -> [Negxl, Zxl, Uzl]),
+			CUzl: (xl?0 -> [Negxl, Zxl, Uzl]),
 				Negxl: vl<- - xl,
 					vl<- ub(ln(vl)), vl<-ub(vl*yl),vl<- ub(exp(vl)),
 					vl<- - vl, goto UzlC,
@@ -2165,7 +2165,7 @@ eg
 			Uxl: xl <- vl, goto Ub,
 			Uzl: vl<- lb(ln(xl)), vl<-lb(vl*yl),vl<- lb(exp(vl)),
 				goto UzlC,
-			UzlC: (vl ?zl -> [Ub, Ub, Upzl]),
+			UzlC: (vl?zl -> [Ub, Ub, Upzl]),
 				Upzl: zl<- vl, goto Ub,
 		  Ub: (zh?O ->[Zh,Zh,NZh]),
 			Zh: vh<- 0, goto Ubch,
@@ -2202,7 +2202,7 @@ eg
 			vl<-lb( vl/yl), vl<-lb( exp(vl)),
 			Dovh: vh <- ub( ln(zh)),
 				vh<-ub( vh/yl), vh<- ub(exp(vh)),
-			ChkX: ( xl ?0 -> [ Chkub, Eq, Eq]),
+			ChkX: ( xl?0 -> [ Chkub, Eq, Eq]),
 			Chkub: (xh?O -> [Flp,Flp, SpO]),
 				SpO: uh<- -xl,
 					(uh?vl -> [Eq, Mayleft,Mayleft]),
@@ -2218,7 +2218,7 @@ eg
 		
 		Flp: uh<-vh, flip(x), vh<-uh, goto Eq,
 			          % Note:flip ( may) use vh
-		Eq: (vl ?xl -> [Uzl, Ub, Uxl]),
+		Eq: (vl?xl -> [Uzl, Ub, Uxl]),
 			Uxl: xl <- vl, goto Ub,
 			Uzl: vl<- lb(ln(xl)), vl<-lb(vl*yl),vl<- lb(exp(vl)),
 				(vl?zl ->[Ub,Ub,Upzl]),
