@@ -49,7 +49,7 @@ eg
 		long     constraintHead;   /* queue for freeze constraints*/
 		long     constraintTail;
 		long     procname;         /* name of current call */
-		#define  nargs     args[O]
+		#define  nargs     args[0]
 		long     args[MAXREGS];    /* arguments to a call */
 	} ;
 
@@ -227,13 +227,13 @@ plus the following kept in the tcb:
 
 eg
 	deref( T:term)-> Tag :- % function returns Tag
-		while T>O and T\@=[T] do T<-[T],
+		while T>0 and T\@=[T] do T<-[T],
 		Tag<- T.tag.
 	
 	derefseq(A,T) ->:- % function, A is heap address,returns tag value
 		loop:T<-[A] ,
-			{ T@=O -> endseq
-			| T<O or -T[list] -> term
+			{ T@=0 -> endseq
+			| T<0 or -T[list] -> term
 			| A@=(B<- T &~ list) -> tailvar
 			| A<-B, goto loop
 			}.
@@ -246,11 +246,11 @@ eg
 	wakeup_constraint(Term) :-
 		Queue<- (list|hp), % i.e., a tailvar
 		hp<=Term,
-		{ qhead(tcb)@=O -> qhead[tcb]<-Queue
+		{ qhead(tcb)@=0 -> qhead[tcb]<-Queue
 		| [qtail[tcb]]<-Queue},
 		qtail[tcb]<-hp, % note that we do not trail since wakepu list is
 		% only a temporary structure (should be empty at cp creation)
-		hp<=O,
+		hp<=0,
 		BNRP_flags.C<-1.
 	
 	bindvar( Addr, Term):-   %term not a variable
@@ -281,16 +281,16 @@ eg
 
 	bindtvar( Addr, Seq):-  % Addr and Seq are addresses on heap
 		Addr[1]@= -1 -> wakeup_constraint(Addr[2]),
-		Addr @< bh -> entrail(Addr[O],Addr),
-		Addr[O]<- (list|Seq).  % bind the variable
+		Addr @< bh -> entrail(Addr[0],Addr),
+		Addr[0]<- (list|Seq).  % bind the variable
 	
-	arity_compatible(M,N) :- {M>=O and N>=O -> M@=N | (M+N) >= 0}.
+	arity_compatible(M,N) :- {M>=0 and N>=0 -> M@=N | (M+N) >= 0}.
 	
 	nilcheck( A:address) :-
 		loop:T<-[A],
-			{ T@=O -> true
-			| T<O or -T[list] -> goto fail
-			| A@= (B<- T &~ list) -> bindtvar(A,O)
+			{ T@=0 -> true
+			| T<0 or -T[list] -> goto fail
+			| A@= (B<- T &~ list) -> bindtvar(A,0)
 			| A<-T &~ list, goto loop
 			}.
 	
@@ -310,7 +310,7 @@ eg
 				}
 			| longint-> case deref( Term2) of
 				{ var-> bind( Term2.value,Term1)
-				| longint-> Term1.value[O,1]@=Term2.value[O,1]
+				| longint-> Term1.value[0,1]@=Term2.value[0,1]
 				}
 			| float:case deref( Term2) of
 				{ var-> bind( Term2.value,Term1)
@@ -347,8 +347,8 @@ eg
 		procname[tcb]<- P,
 		A<- P && symmask,  % mask out tag bits to get AST ptr
 		A<-[A],            %first clause /primiitve
-		{ A>O ->callprolog(A,N)
-		| A<O ->callprimitive(A,N)
+		{ A>0 ->callprolog(A,N)
+		| A<0 ->callprimitive(A,N)
 		| BNRPflags[tcb]@/=0, procname[tcb]@/='tracer',goto tracer
 		}.
 
@@ -356,24 +356,24 @@ eg
 		cb[tcb)<-lcp, %i.e., last choice point prior to this call
 		nargs[tcb]<-N,
 		H<-hashkey(N),
-		{H@=O -> ppc<-nextclause(N,A,Next)
+		{H@=0 -> ppc<-nextclause(N,A,Next)
 			| ppc<-findclause(N,A,H,Next)},  %keyed access
 		Next@/=0 -> newchoicepoint(N,H,Next),
 		goto shead.
 
 	shead:-
-		N<O -> adjust_arity,
+		N<0 -> adjust_arity,
 		(hp + 1024) > te[tcb]) ->error( 'heap overflow'),
 		goto Head.
 
-	hashkey(N)->{N@=O ->0
+	hashkey(N)->{N@=0 ->0
 		| case deref( temp[1]) of.
 			{ symbol-> symbolhash( stemp[1].value) % state space
 			| integer-> temp[1]
 			| longint-> temp[1] .value[1]+1
 			| float-> temp[1].value[1]+2
 			| list-> (temp[1]=[] ->[] | (sgn|lst))
-			| structure-> min(O,temp[1].value[1]) % princ.func
+			| structure-> min(0,temp[1].value[1]) % princ.func
 			| 0
 			}}.
 
@@ -385,7 +385,7 @@ eg
 
 	findclause( N,A,Key,B) -> P:-% fails if no clause found
 		loop: K<- key[A],
-		{ [K@=O or K@=Key, arity compatible(arity[A],N)] -> B<-nextkeyed[A]
+		{ [K@=0 or K@=Key, arity compatible(arity[A],N)] -> B<-nextkeyed[A]
 		| 0@/=A<- nextkeyed[A], goto loop,
 		}.
 
@@ -427,7 +427,7 @@ eg
 	fail :- {N:integer,A:clause entry ptr, Next:address of clause}
 		pdl<- stbase,
 		qhead[tcb]<-qtail[tcb]<-0,
-		lcp@=O -> goto taskterminate,
+		lcp@=0 -> goto taskterminate,
 		{-1 @=N<-arity[lcp]-> lcp<- previous[lcp],goto fail},  %was dummy cp
 		     % now see if there is another clause that matches
 		A<- nextcl[lcp], Key<- key[lcp],
@@ -442,7 +442,7 @@ eg
 		procname[tcb]<- procname[lcp],  %for debugging
 		nargs[tcb] <- N,
 		process_trail( te[lcp]),
-		N>O ->for J=1, .. ,N do temp[J] <- lcp [savearg + J],
+		N>0 ->for J=1, .. ,N do temp[J] <- lcp [savearg + J],
 		{ Next@\=0 -> nextcl[lcp]<-Next  % update clause ptr
 		| lcp<-previous[lcp]  % or finish this choicepoint
 		},
@@ -468,7 +468,7 @@ eg
 		T<- (sgn|hp),
 		hp<= [ (struc_hdr|N),P],
 		for J=1, .. ,N do push_unsaft(J),
-		hp<=O,
+		hp<=0,
 		wakeup_constraint(T).
 
 	handle_constraints(P) :- suspend_call(P),call_constraints.
@@ -499,13 +499,13 @@ eg
 	tracer(P) :- suspend_call(P), ecall2('tracer',1).
 
 	callprimitive(P,N) :-
-		N<O -> unwindcall,  % variadic C call
+		N<0 -> unwindcall,  % variadic C call
 		heap[tcb]<-hp,
 		svce[tcb]<-ce       % save prolog registers into tcb,
 		++ BNRPprimitivecalls,
 		restore C registers,
 		Retcode<-callc( P),
-		Retcode@=O -> goto Fail,
+		Retcode@=0 -> goto Fail,
 		hp<-heap[tcb],      % restore prolog registers from tcb
 		ce<-svce[tcb] ,
 		ppc<- cp[tcb],
@@ -621,7 +621,7 @@ eg
 
 	tunif_void() :- goto HEAD.
 
-	end_seq() :- term<-tvcheck,term@=O.
+	end_seq() :- term<-tvcheck,term@=0.
 
 	unif cons(C) :- term<-tvcheck,
 		case deref(term) of
@@ -693,7 +693,7 @@ eg
 		}.
 
 	unif_cons_by_value(C) :-        % opcode $C4 used by state space
-		hp<=O, ptr <- hp,
+		hp<=0, ptr <- hp,
 		term<- lookup(C),
 		ptr@=hp  % may need to copy symbol from state space to heap
 		-> ptr[-1]<- term  % not new
@@ -731,11 +731,11 @@ eg
 	unify_seq(Al,A2) :-
 		next: ++Al,
 		dref: T1<- [Al],
-			{ Tl@=O -> case derefseq(A2,T2) of
+			{ Tl@=0 -> case derefseq(A2,T2) of
 				{ endseq -> true
 				| tailvar -> bindtv(A2,0)
 				}
-			| T1>O & T1.list ->
+			| T1>0 & T1.list ->
 				{ B1<- (T1 &~ list),
 				  B1 @= A1 -> bindtv(A1,A2)
 				| B1 @> A1 -> A1<-B1, goto dref
@@ -759,15 +759,15 @@ eg
 	neckcon(E) :-
 	% emitted by compiler whenever first call of body is compiled inline
 	% E is byte giving current environment size
-	% when E=O, next opcode is dealloc( 06), else it is noop
+	% when E=0, next opcode is dealloc( 06), else it is noop
 		pdl@/=stbase -> gen_unify,
-		{ BNRPflags[tcb][c_bit]=O -> ppc<- ppc+2, goto body
+		{ BNRPflags[tcb][c_bit]=0 -> ppc<- ppc+2, goto body
 		            %skips 2 bytes (env size + dealloc)
 		| fire_constraints
 		}.
 
 	fireconstraints:-
-		N=O & ppc[1]@=6 -> alloc,
+		N=0 & ppc[1]@=6 -> alloc,
 		cp[tcb]<- ppc,  % NOTE: ppc points at E (env size)
 		call_constraints.
 
@@ -891,7 +891,7 @@ eg
 
 	exec_i :-  % meta call & exec call structure is in temp[1]
 		case deref( temp[1]) of
-			{ symbol-> ecall( temp[1],O)
+			{ symbol-> ecall( temp[1],0)
 			| structure-> expand_call( temp[1]~sgn)
 			| list-> ecall('$calllistindirect',1)
 			| error( nonexecutable_term)
@@ -942,7 +942,7 @@ eg
 		while te[tcb]@/=TE do
 			{ --OT, T<-[OT], --OT,A<-[OT]
 				{ (A@<hp and A@<bh
-					and (T>O or T.addr@<bh))  % var,tvar or redundant
+					and (T>0 or T.addr@<bh))  % var,tvar or redundant
 					                          % interval update
 					or A@<be                  % env var
 					or A@>lcp                 % otherwise (temp atoms)
@@ -964,7 +964,7 @@ eg
 		  ce[lcp]=ce and cp[lcp]= ppc-1  % i.e., former cp
 		       % i.e., returning from call that created the lcp
 		  -> { (bh + BNRP gcflag) @> hp
-				  -> gc(O), % no args to audit
+				  -> gc(0), % no args to audit
 				arity[lcp]@= -1 -> stdcut(previous[lcp])
 				    % discards any dummy choicepoint
 			 }.
@@ -994,11 +994,11 @@ eg
 		      % i.e., returning from same call that created this CP
 			  -> { arity[CP) @= -1 -> cb[tcb)<-previous[CP],
 				     % discards dummy choicepoint
-				   gc(O) %no args to audit
+				   gc(0) %no args to audit
 				 | CP<-next_clause_later_than(CP),
 					{ ( hp[CP] + BNRP gcflag) @> hp ->
 						{CP@/=lcp[tcb) => stdcut(CP)},
-					  gc(O)
+					  gc(0)
 					}
 			}
 		} .
@@ -1064,7 +1064,7 @@ eg
 		C<- ce,
 		loop: { Name@= pname[C]
 				-> {cutb[C]@>lcp[tcb] -> deepcut2( cutb[C])}
-			  | previous[C]@=O -> error(Cuterror)
+			  | previous[C]@=0 -> error(Cuterror)
 			  | C<- previous[C), goto loop
 			  } .
 
@@ -1090,7 +1090,7 @@ eg
 	% L- list, S- symbol, F-structure I- integer, R- float
 
 	test(T,Mask)->Bool:- case deref(temp[T]) of
-		{ list->Mask[O),
+		{ list->Mask[0),
 		| structure->Mask[1],
 		| symbol->Mask[2]
 		| integer->Mask[3)
@@ -1106,7 +1106,7 @@ eg
 	%                 Arithmetic
 	Makes use of an arithmetic stack
 		astack[0..9] of {longint|float}
-		atype[O..9] of boolean,  % 1 if float, 0 for integer
+		atype[0..9] of boolean,  % 1 if float, 0 for integer
 		asti : 0..9 %initialized to 0 on entry to Body ext loop
 			(i.e., on escape code)
 
@@ -1132,16 +1132,16 @@ eg
 	eval_sym:-
 
 
-	pop_vart(T):- asti@=O,temp[T]<- arithterm(astack[O]), goto Body.
+	pop_vart(T):- asti@=0,temp[T]<- arithterm(astack[0]), goto Body.
 
 	pop_valt(T):- deref(temp[T]),
-		unify(temp[T],arithterm( astack[O])),
+		unify(temp[T],arithterm( astack[0])),
 		goto Body.
 
-	pop_varp(P):- asti@=O,ce[P]<-arithterm( astack[O]), goto Body.
+	pop_varp(P):- asti@=0,ce[P]<-arithterm( astack[0]), goto Body.
 
 	pop_valp(P):- deref(ce[P]),
-		unify(ce[P],arithterm( astack[O])),
+		unify(ce[P],arithterm( astack[0])),
 		goto Body.
 
 	eval_valt(T):- Tag<- deref( temp[T]), arith_push(Tag,temp[T]).
@@ -1177,9 +1177,9 @@ eg
 		--asti,
 		{ atype[asti)
 			-> astack[asti)<-flpower( astack[asti],N)
-		|	{ N>O -> astack[asti]<-intpower( astack[asti],N)
-			| N=O -> true
-			| {astack[asti]=O -> error(dividebyzero)
+		|	{ N>0 -> astack[asti]<-intpower( astack[asti],N)
+			| N=0 -> true
+			| {astack[asti]=0 -> error(dividebyzero)
 			| astack[asti]<-flpower(1.0/astack[asti],-N),
 			  atype[asti)<-1,
 			}
@@ -1236,8 +1236,8 @@ eg
 	to a Prolog implementation of the arithmetic relation.
 	*/
 
-	arithmetic_decompilation:- {J:O .. 8},
-		for J=O,asti do
+	arithmetic_decompilation:- {J:0 .. 8},
+		for J=0,asti do
 			{ astack[J]<- arithterm( astack[J]),
 		goto Clause_mode
 
@@ -1257,11 +1257,11 @@ eg
 		I S<-T } .
 
 	mk callO( Pfunc) :-append to list(sgnlhp),
-		hp<= [ (hdrll), Pfunc,O].
+		hp<= [ (hdrll), Pfunc,0].
 
 	mk_calll( Pfunc,T:term) :- append_to_list(sgnlhp),
 		safe(T,Sl),
-		hp<= [ (hdrll), Pfunc,Sl,O].
+		hp<= [ (hdrll), Pfunc,Sl,0].
 
 	mk_call2( Pfunc,Tl:term, T2:term) :-append to list(sgnlhp),
 		safe(T,Sl), safe(T2,S2), - -
@@ -1326,8 +1326,8 @@ eg
 		astack[asti]<- T.
 
 	call arithmetic(F) :- asti<-0,
-		{ inclause -> mk call2(F,astack[O],astack[1]), goto Body
-		| temp[1]<- astack[O], temp[2]<-astack[l], ecall2(F,2)
+		{ inclause -> mk call2(F,astack[0],astack[1]), goto Body
+		| temp[1]<- astack[0], temp[2]<-astack[l], ecall2(F,2)
 		} .
 
 	+     :- cl_dyadic('+').
@@ -1390,7 +1390,7 @@ The uniqueness of the external audited addresses is maintained by the system acc
 The specification given here is based on the wama version (as usual) and ignores alignment issues (as usual). The C version of the gc algorithm is quite different in structure and there are some significant second order differences in what it does and in what order. This may result in different final heap sizes for the two algorithms. In particular, the short circuiting of variable chains in the target region is done differently, as is the unwinding of tail vars, and the tagging of moved items is different and incomplete, which may give rise to some duplication of shared data structures.
 
 eg
-	do_gc( Nargs: number):-  % Nargs>=O , hp is used as writehead
+	do_gc( Nargs: number):-  % Nargs>=0 , hp is used as writehead
 		{ StartN, EndN, Readhd, TE, A: address,
 		  LCP:^choicepoint, Delta,T: longint, J:0 .. 255},
 		qhead[tcb]@/=0 ->exit,
@@ -1399,7 +1399,7 @@ eg
 		EndN <- StartN + Delta, % StartN to EndN is copyto region
 		EndN @> te[tcb] ->error( heap_overflow),  %insufficient room
 		BNRP_numgc ++,
-		{Nargs>O -> foreach J=1,Nargs do temp[J]<- preserve( temp[J])},
+		{Nargs>0 -> foreach J=1,Nargs do temp[J]<- preserve( temp[J])},
 		LCP<- lcp[tcb],
 		TE<- te[tcb],           %audit trail from lcp to present
 		while TE @< te[LCP] do {
@@ -1412,7 +1412,7 @@ eg
 		Readhd<- StartN,        % process rescued stuff "recursively"
 		while Readhd @< hp do {
 			T<- [Readhd],
-			{ T@=O -> true
+			{ T@=0 -> true
 			| T @= ( ext_int| 1) -> Readhd++  % skip longints & floats
 			| T @= ( ext_flt| 2) -> Readhd++, Readhd++
 			| [Readhd]<- preserve(T)
@@ -1442,7 +1442,7 @@ eg
 	gcdref_var(T)->S:-
 		loop: { T@< bh -> S<- T       % outside target
 			  | T@< EndR -> T1<-[T],  % in target region
-				{ T1>O and T1@=T -> S<- unboundvar(T),
+				{ T1>0 and T1@=T -> S<- unboundvar(T),
 				| T1 > 0 -> T<- T1, goto loop,
 				| S<- save_nonvar(T)
 				}
@@ -1481,7 +1481,7 @@ eg
 		{ A @< bh -> S <- T
 		| A @< EndR
 			-> Tl <- [A],
-			{ T1>O and T1[lst]  %relocation tvar
+			{ T1>0 and T1[lst]  %relocation tvar
 				-> A1<- T1 &~ lst,
 				{ Al@> EndR -> S<- (sgnl (Al- Delta)) }
 			| T1 @= ( int_hdr| 1)
@@ -1504,7 +1504,7 @@ eg
 		loop: T<-[A],
 			[A]<- (lstlhp),A++,  % leave forwarding address as tvar
 			{ T@= 0 -> hp <= 0, Indef<- 0
-			| T>O and lst[T] and (T &~lst)@< A-> hp<= gcdref_tvar(T)
+			| T>0 and lst[T] and (T &~lst)@< A-> hp<= gcdref_tvar(T)
 			| hp<=T, goto loop
 			}.
 
@@ -1651,7 +1651,7 @@ eg
 	interval_operation( xp).                 % exp/ln
 
 	wrap ( zl, zh, xl, xh, yl, yh) :-
-		% Z:=wrap(X,C) C(=yh) numeric, C>O, folds X into interval [-C,C]
+		% Z:=wrap(X,C) C(=yh) numeric, C>0, folds X into interval [-C,C]
 		% This is used to generate periodic functions
 		% Note: assume yl=yh > 0
 		ul <- 2**1, ul<- ul*yh,             % compute ul=2C
@@ -1743,10 +1743,10 @@ eg
 		Exit: success.
 
 	j_less( zl, zh, xl,xh, yl,yh) :-  % Y is assumed to be boolean!
-		% if Y =1 then Z>=X else if Y=O then Z<X
+		% if Y =1 then Z>=X else if Y=0 then Z<X
 		% else if Z<X persistently then Y<- 0
-		yl?O -> [iaerror, Mfalse, greatereq],
-		Mfalse: (yh?O -> [iaerror, higher, Test]),
+		yl?0 -> [iaerror, Mfalse, greatereq],
+		Mfalse: (yh?0 -> [iaerror, higher, Test]),
 		Test: (xh?zl ->[True, True, Test2]),
 		Test2: (zh?xl -> [False, Exit, Exit]),
 		True: yl <- 2**0, goto Exit,
@@ -1754,11 +1754,11 @@ eg
 		Exit: success.
 
 	k_equal( zl,zh,xl,xh,yl,yh) :-  % Y is assumed to be boolean!
-		% if Y=l then Z==X else if Y=O then Z<>X else
+		% if Y=l then Z==X else if Y=0 then Z<>X else
 		% if z disjoint from X then Y<-0 else if z a point and X a
 		% point and X=Z then Y<-1
-		yl?O ->[ iaerror, Mfalse, equal],
-		Mfalse: (yh?O ->[ iaerror, unequal, Test]),
+		yl?0 ->[ iaerror, Mfalse, equal],
+		Mfalse: (yh?0 ->[ iaerror, unequal, Test]),
 		Test: ( zl?xh -> [Test2, Tryeq, Un] ) ,
 		Test2: (xl?zh ->[Exit, Exit, Un]),
 		Un: yh<- 0, goto Exit,
@@ -1865,42 +1865,42 @@ eg
 		Exit: success.
 
 	mul( zl, zh, xl, xh, yl, yh) :- % Z == X*Y
-		xl?O -> [Chkxh, XMpos, Xpos],
-				Chkxh: (xh?O ->[ Swx, Swx, Xindef]),
+		xl?0 -> [Chkxh, XMpos, Xpos],
+				Chkxh: (xh?0 ->[ Swx, Swx, Xindef]),
 					Swx: flip(x), goto Xneg,
 		Xneg: (yl?0 -> [ Chkyhl, ZMneg, Zneg]),
-				Chkyhl: (yh?O -> [Swyl,Swyl, Yindefl]),
+				Chkyhl: (yh?0 -> [Swyl,Swyl, Yindefl]),
 					Swyl: flip(y), goto Zpos,
-				Yindefl: (zl?O -> [ Chkzhl, MakeYneg,MakeYneg] ),
-			                      % X=<O,Z>=O => Y=<O
-					Chkzhl: (zh?O -> [Swzl, Swzl, FZ ] ) ,
-						Swzl: flip(z),goto MakeYpos,% X=<O,Z=<O => Y>=O
+				Yindefl: (zl?0 -> [ Chkzhl, MakeYneg,MakeYneg] ),
+			                      % X=<0,Z>=0 => Y=<0
+					Chkzhl: (zh?0 -> [Swzl, Swzl, FZ ] ) ,
+						Swzl: flip(z),goto MakeYpos,% X=<0,Z=<0 => Y>=0
 							FZ: flip(z), goto MpyBX,
 			                      % since x was flipped
-			  ZMneg: (yh?O ->[Fail, ZZero, Zneg]),
-		Xindef: (yl?O -> [Chkyh2, YMpos,Ypos]),
-			  Chkyh2: (yh?O -> [Yneg,Yneg, MpyC]),
+			  ZMneg: (yh?0 ->[Fail, ZZero, Zneg]),
+		Xindef: (yl?0 -> [Chkyh2, YMpos,Ypos]),
+			  Chkyh2: (yh?0 -> [Yneg,Yneg, MpyC]),
 			  Yneg: flip(y),
-				(zl?O -> [Chzh2, MakeXneg,MakeXneg]),
-				  Chzh2: (zh?O-> [Swz2, Swz2, FZ2]),
+				(zl?0 -> [Chzh2, MakeXneg,MakeXneg]),
+				  Chzh2: (zh?0-> [Swz2, Swz2, FZ2]),
 					  Swz2:flip(z), goto MakeXpos,
 						  FZ2: flip(z), goto MpyBY
-			  YMpos: (yh?O -> [Fail, ZZero, Ypos]),
-			  Ypos: (zl?O -> [Chzh3, MakeXpos,MakeXpos]),
-				  Chzh3: (zh?O->[Swz3,Swz3, MpyBY]),
+			  YMpos: (yh?0 -> [Fail, ZZero, Ypos]),
+			  Ypos: (zl?0 -> [Chzh3, MakeXpos,MakeXpos]),
+				  Chzh3: (zh?0->[Swz3,Swz3, MpyBY]),
 					  Swz3: flip(z), goto MakeXneg,
-		XMpos: (xh?O -> [Fail, ZZero, Xpos]),
-		Xpos: (yl?O -> [ Chkyh,ZMpos,Zpos]),
-			  Chkyh: (yh?O ->[ Swy, Swy, Yindef]),
+		XMpos: (xh?0 -> [Fail, ZZero, Xpos]),
+		Xpos: (yl?0 -> [ Chkyh,ZMpos,Zpos]),
+			  Chkyh: (yh?0 ->[ Swy, Swy, Yindef]),
 				  Swy: flip(y), goto Zneg,
-				  Yindef: (zl?O -> [ Chkzh, MakeYpos,MakeYpos]),
-			                          % X>=O,Z>=O => Y>=O
-					  Chkzh: (zh?O -> [Swz4, Swz4, MpyBX ] ) ,
-						  Swz4: flip(z),goto MakeYneg,% X>=O,Z=<O => Y=<O
-			  ZMpos: (yh?O -> [Fail, ZZero, Zpos]),
+				  Yindef: (zl?0 -> [ Chkzh, MakeYpos,MakeYpos]),
+			                          % X>=0,Z>=0 => Y>=0
+					  Chkzh: (zh?0 -> [Swz4, Swz4, MpyBX ] ) ,
+						  Swz4: flip(z),goto MakeYneg,% X>=0,Z=<0 => Y=<0
+			  ZMpos: (yh?0 -> [Fail, ZZero, Zpos]),
 			
 		MpyC: vh<- lb(xl*yh),      % X,Y,Z all sign indefinite
-			vl<- lb(xh*yl),        % vh=<O, vl=<O
+			vl<- lb(xh*yl),        % vh=<0, vl=<0
 			vh?vl -> [ Usevh,Usevh,Usevl],
 			  Usevl: vh<-vl, goto Usevh,
 			Usevh: (vh?zl-> [MpyCH,MpyCH, Uzlvh]),
@@ -1915,20 +1915,20 @@ eg
 		MpyBX: vl <- lb(xh*yl),    % X definite sign, Y& Z indefinite
 			vl?zl -> [ Backxzl,MpyBHX,Uzll],
 			  Uzll: zl<-vl, goto MpyBHX,
-			  Backxzl: (xl?O -> [MpyBHX,MpyBHX,BXDivl]),
+			  Backxzl: (xl?0 -> [MpyBHX,MpyBHX,BXDivl]),
 				  BXDivl: vl <- lb(zl/xl),
 					vl?yl-> [ MpyBHX,MpyBHX, Uyll],
 					Uyll: yl<- vl, goto MpyBHX,
 		MpyBHX: vh<- ub( xh*yh),
 			vh?zh -> [ MUZH, Exit, Backxzh],
-			Backxzh: (xl?O -> [Exit,Exit,BXDivh]),
+			Backxzh: (xl?0 -> [Exit,Exit,BXDivh]),
 				  BXDivh: vh<- ub(zh/xl),
 					vh?yh -> [ MUYH, Exit,Exit],
 					
 		MpyBY: vl <- lb(yh*xl),    % Y definite sign, X& Z indefinite
 			vl?zl -> [ Backyzl,MpyBHY,Uzl2],
 				  Uzl2: zl<-vl, goto MpyBHY,
-			  Backyzl: (yl?O -> [MpyBHY,MpyBHY,BYDivl]),
+			  Backyzl: (yl?0 -> [MpyBHY,MpyBHY,BYDivl]),
 				BYDivl: vl <- lb(zl/yl),
 					vl?xl-> [ MpyBHY,MpyBHY, Uyl2],
 					Uyl2: xl<- vl, goto MpyBHY,
@@ -1938,9 +1938,9 @@ eg
 				BYDivh: vh<- ub(zhlyl),
 					vh?xh -> [ MUXH, Exit,Exit],
 					
-		ZZero: (zl?O -> [ Zl_O, Zh, Fail]),
+		ZZero: (zl?0 -> [ Zl_O, Zh, Fail]),
 				Zl 0: zl <- 0, goto Zh,
-			Zh: (zh?O -> [Fail, Exit, Zh_0]),
+			Zh: (zh?0 -> [Fail, Exit, Zh_0]),
 				Zh_0 : zh <- 0, goto Exit,
 		
 		% all signs definite multiplication
@@ -1949,26 +1949,26 @@ eg
 		MakeXpos: xl<- 0, goto MpyA,
 		MakeYneg: flip(y), goto MakeYpos,
 		MakeYpos: yl<- 0, goto MpyA,
-		Zneg: (zh?O -> [Swz, Swz, Chzl]),
+		Zneg: (zh?0 -> [Swz, Swz, Chzl]),
 			Chzl: flip(z), zl<-0, goto MpyA,
 			Swz: flip(z), goto MpyA,
-		Zpos: (zl?O -> [Chzh, MpyA, MpyA]),
+		Zpos: (zl?0 -> [Chzh, MpyA, MpyA]),
 			Chzh: zl<- 0, goto MpyA,
 		
 		MpyA: vl <- lb( xl * yl),
 			vl?zl -> [BackLX, Upper, MUZL],
-			BackLX: (yh?O -> [BackLY, BackLY,DivL]),
+			BackLX: (yh?0 -> [BackLY, BackLY,DivL]),
 				DivL: vl <- lb( zl/yh),
 					vl?xl -> [BackLY,BackLY, MUXL],
 					MUXL: xl <- vl, goto BackLY,
-				BackLY: (xh?O -> [Upper,Upper,BLY]),
+				BackLY: (xh?0 -> [Upper,Upper,BLY]),
 					BLY: vl <- lb( zl/xh),
 					vl?yl -> [Upper, Upper, MUYL],
 					MUYL: yl <- vl, goto Upper,
 			MUZL: zl<- vl, goto Upper,
 		Upper: vh <- ub( xh * yh),
 			vh?zh -> [ MUZH, Exit, BackHX],
-			BackHX: (yl?O ->[BackHY,BackHY ,DivH]),
+			BackHX: (yl?0 ->[BackHY,BackHY ,DivH]),
 				DivH: vh <- ub( zh/yl),
 					vh?xh -> [MUXH, BackHY,BackHY],
 					MUXH : xh<- vh, goto BackHY,
@@ -1981,13 +1981,13 @@ eg
 		Fail: fail.
 
 	rootsquare( zl, zh, xl, xh) :-                   % Z==X**2
-		xl?O -> [ Chkub, Eq,Eq],
-		Chkub: (xh?O -> [Flp, Flp, SpO]),
+		xl?0 -> [ Chkub, Eq,Eq],
+		Chkub: (xh?0 -> [Flp, Flp, SpO]),
 			SpO: ul <- ub(xl*xl),  % X spans 0
 				ul?zl -> [Zeroxl,Tryxh,Tryxh],  % is sign of x forced?
 				Tryxh: uh<- ub(xh*xh),
 					(uh?zl-> [Zeroxh,Zlb,Zlb]),
-				  Zlb: (zl?O -> [MUzl,Zub,Zub]),
+				  Zlb: (zl?0 -> [MUzl,Zub,Zub]),
 				                  %intersect Z with [0, max(ul, xh)]
 					MUzl: zl<- 0, goto Zub,
 				  Zub: (ul?uh -> [Zhxh,Zhxh, Zhul]),
@@ -2013,7 +2013,7 @@ eg
 		Zeroxl: xl<- 0, goto Eq,  % x can't be negative
 		Eq: ul<- lb(xl*xl),
 			uh<- ub(xh*xh),
-			(ul?zl -> [Chkxl, Ub, Chkzl]), % X*X==Z, X>=O
+			(ul?zl -> [Chkxl, Ub, Chkzl]), % X*X==Z, X>=0
 			Chkxl:ul<- lb(sqrt(zl)),
 				(ul?xl -> [Ub,Ub, Upxl] ), % Jun 2
 				Upxl: xl<-ul, goto Ub,
@@ -2041,9 +2041,9 @@ eg
 		Exit success.
 
 	xp( zl, zh, xl, xh ) :-  % Z == exp(X)
-		zl?O -> [Trim, Zeroch, Loglo],
+		zl?0 -> [Trim, Zeroch, Loglo],
 		Trim: zl <- 0, goto Zeroch,
-		Zeroch: (zh?O -> [Fail,Fail, Expl] ),
+		Zeroch: (zh?0 -> [Fail,Fail, Expl] ),
 		Loglo: ul <- lb( ln( zl) ),
 			(xl?ul -> [Uxl,Loghi,Expl]),
 			Uxl: xl <- ul, goto Loghi,
@@ -2060,8 +2060,8 @@ eg
 		Exit: success.
 
 	cos( zl, zh, xl, xh ) :- % Z == cos(X), -l=<Z=<l, -pi=< X=< pi
-		xl?O -> [Mleft, Right,Right],
-		Mleft: ( xh?O -> [Left,Left, Center]),
+		xl?0 -> [Mleft, Right,Right],
+		Mleft: ( xh?0 -> [Left,Left, Center]),
 		Left: flip(x), goto Right,
 		Right: uh <- ub( cos(xl)),
 			uh?zh -> [Uzh, Low, Uxl],
@@ -2110,9 +2110,9 @@ eg
 		                            % (flip destroys vh) sin(-x)=-sin(x)
 		MRight: ( xl?0 -> [ForceR, Pos, Pos ]) ,
 			Pos: (xl?vh -> [CR,Right,Right]),
-			ForceR: (zl?O -> [Leftbranch, CR, CR]),
+			ForceR: (zl?0 -> [Leftbranch, CR, CR]),
 			Leftbranch: ( xl?vl -> [Exit, Low,Low] ),
-		                            % Low if zl<O, -pi=<xl<O
+		                            % Low if zl<0, -pi=<xl<0
 		Right: ul <- ub( sin(xl)),  % decreasing monotone
 			uh <- lb( sin(xh)),
 			ul?zh ->[ Urzh, Rlow, Urxl],
@@ -2139,11 +2139,11 @@ eg
 		
 		Exit: success.
 
-	pow odd( zl, zh, xl, xh, yl) :-  % Z==X**N , N>O, N odd, N in yl
-		zl?O -> [Chkub,Right, Right],
-		Chkub: (zh?O -> [Left, Left, MayCenter]),
-		  MayCenter: (xl?O -> [Chubx, Rightx,Rightx]),
-		  Chubx: (xh?O -> [Leftx,Leftx,Center]),
+	pow odd( zl, zh, xl, xh, yl) :-  % Z==X**N , N>0, N odd, N in yl
+		zl?0 -> [Chkub,Right, Right],
+		Chkub: (zh?0 -> [Left, Left, MayCenter]),
+		  MayCenter: (xl?0 -> [Chubx, Rightx,Rightx]),
+		  Chubx: (xh?0 -> [Leftx,Leftx,Center]),
 		Center: vl <- - zl,
 			vl<- ub( ln(vl)), vl<- ub( vl/yl), vl<- ub( exp(vl)),
 			vl<- - vl,
@@ -2156,7 +2156,7 @@ eg
 		Leftx: flip(z),flip(x), goto Rightx,
 		Rightx: zl<-0, goto Right,
 		Left: flip(z),flip(x), goto Right,
-		  Right: (zl?O -> [Zl,Zl,NZl]),
+		  Right: (zl?0 -> [Zl,Zl,NZl]),
 			Zl: vl<-0, goto Lbch,
 			NZl: vl <- lb( ln(zl)),
 				vl<- lb( vl/yl), vl<- lb( exp(vl)),
@@ -2167,14 +2167,14 @@ eg
 				goto UzlC,
 			UzlC: (vl?zl -> [Ub, Ub, Upzl]),
 				Upzl: zl<- vl, goto Ub,
-		  Ub: (zh?O ->[Zh,Zh,NZh]),
+		  Ub: (zh?0 ->[Zh,Zh,NZh]),
 			Zh: vh<- 0, goto Ubch,
 			NZh:vh <- ub( ln(zh)),
 				vh<- ub( vh/yl), vh<- ub( exp(vh)),
 				goto Ubch,
 		Ubch: (vh?xh -> [Uxh, Exit, Uzh]),
 		  Uxh: xh<- vh, goto Exit,
-		  Uzh: (xh?O -> [Uzhn, Uzhz, Uzhp]),
+		  Uzh: (xh?0 -> [Uzhn, Uzhz, Uzhp]),
 				Uzhn: vh<- -xh,
 					vh<- lb (ln (vh)),
 					vh<-lb(vh*yl),vh<-lb( exp(vh)),
@@ -2187,23 +2187,23 @@ eg
 		  Upzh: zh <- vh, goto Exit,
 		Exit: success.
 
-	qpow even( zl, zh, xl, xh, yl) :- % Z==X**N , N>O, N even, N in yl
-		zl?O -> [SZ,Zero,Nonz],
-			SZ: (zh?O -> [Fail,SZl,SZl]),
+	qpow even( zl, zh, xl, xh, yl) :- % Z==X**N , N>0, N even, N in yl
+		zl?0 -> [SZ,Zero,Nonz],
+			SZ: (zh?0 -> [Fail,SZl,SZl]),
 				SZl: zl<- 0, goto Zero,
 		Zero: vl<- 0,
-			zh?O -> [Zvh,Zvh,Dovh],
+			zh?0 -> [Zvh,Zvh,Dovh],
 				Zvh: vh<-0, goto ZChkXl,
-				ZChkXl: (xl?O -> [ Zxl,ZChkXh,Fail]),
+				ZChkXl: (xl?0 -> [ Zxl,ZChkXh,Fail]),
 					Zxl: xl<-0, goto ZChkXh,
-				ZChkXh: (xh?O -> [Fail, Exit, Zxh]),
+				ZChkXh: (xh?0 -> [Fail, Exit, Zxh]),
 					Zxh: xh<-0, goto Exit,
 		Nonz: vl <- lb( ln(zl)),
 			vl<-lb( vl/yl), vl<-lb( exp(vl)),
 			Dovh: vh <- ub( ln(zh)),
 				vh<-ub( vh/yl), vh<- ub(exp(vh)),
 			ChkX: ( xl?0 -> [ Chkub, Eq, Eq]),
-			Chkub: (xh?O -> [Flp,Flp, SpO]),
+			Chkub: (xh?0 -> [Flp,Flp, SpO]),
 				SpO: uh<- -xl,
 					(uh?vl -> [Eq, Mayleft,Mayleft]),
 					Mayleft: (xh?vl -> [Flp, Both, Both]),
@@ -2233,12 +2233,12 @@ eg
 		Exit: success.
 
 	vabs( zl, zh, xl, xh) :-                    % Z== |X|
-		xl?O -> [ Chkub, Eq,Eq],
-		Chkub: (xh?O -> [Flp,Flp, SpO]),
+		xl?0 -> [ Chkub, Eq,Eq],
+		Chkub: (xh?0 -> [Flp,Flp, SpO]),
 			SpO: ul <- -(xl), %X spans 0
 				ul?zl -> [Zeroxl,Tryxh,Tryxh],  % is sign of x forced?
 				Tryxh: (xh?zl-> [Zeroxh,Zlb,Zlb]),
-					Zlb: (zl?O -> [MUzl,Zub,Zub]),
+					Zlb: (zl?0 -> [MUzl,Zub,Zub]),
 				                 %intersect z with [0, max(ul, xh)]
 						MUzl: zl<- 0, goto Zub,
 					Zub: (ul?xh -> [Zhxh,Zhxh, Zhul]),

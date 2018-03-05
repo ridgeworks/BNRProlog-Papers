@@ -344,7 +344,7 @@ eg
 	sym FFFB:sym=b
 	sym FFFC:int=2
 	sym FFFD:sym=g
-	sym FFFE:int=O
+	sym FFFE:int=0
 	sym FFFF:sym=f
 
 
