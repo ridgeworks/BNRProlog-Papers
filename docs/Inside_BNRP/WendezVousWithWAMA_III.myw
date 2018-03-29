@@ -1641,7 +1641,7 @@ eg
 	interval_operation( narrower).           % sub interval
 	interval_operation( or).                 % alias choose
 	interval_operation( pow_odd).            % odd positive powers
-	interval_operation( qpow even).          % even pos powers
+	interval_operation( qpow_even).          % even pos powers
 	interval_operation( rootsquare).
 	interval_operation( sin).                % for X in [-pi,pi]
 	interval_operation( tan).                % for X in [-pi/2,pi/2]
@@ -1650,7 +1650,7 @@ eg
 	interval_operation( wrap).               % folds real line into [-Y,Y]
 	interval_operation( xp).                 % exp/ln
 
-	wrap ( zl, zh, xl, xh, yl, yh) :-
+	wrap( zl, zh, xl, xh, yl, yh) :-
 		% Z:=wrap(X,C) C(=yh) numeric, C>0, folds X into interval [-C,C]
 		% This is used to generate periodic functions
 		% Note: assume yl=yh > 0
@@ -1939,7 +1939,7 @@ eg
 					vh?xh -> [ MUXH, Exit,Exit],
 					
 		ZZero: (zl?0 -> [ Zl_O, Zh, Fail]),
-				Zl 0: zl <- 0, goto Zh,
+				Zl_0: zl <- 0, goto Zh,
 			Zh: (zh?0 -> [Fail, Exit, Zh_0]),
 				Zh_0 : zh <- 0, goto Exit,
 		
@@ -2139,7 +2139,7 @@ eg
 		
 		Exit: success.
 
-	pow odd( zl, zh, xl, xh, yl) :-  % Z==X**N , N>0, N odd, N in yl
+	pow_odd( zl, zh, xl, xh, yl) :-  % Z==X**N , N>0, N odd, N in yl
 		zl?0 -> [Chkub,Right, Right],
 		Chkub: (zh?0 -> [Left, Left, MayCenter]),
 		  MayCenter: (xl?0 -> [Chubx, Rightx,Rightx]),
@@ -2187,7 +2187,7 @@ eg
 		  Upzh: zh <- vh, goto Exit,
 		Exit: success.
 
-	qpow even( zl, zh, xl, xh, yl) :- % Z==X**N , N>0, N even, N in yl
+	qpow_even( zl, zh, xl, xh, yl) :- % Z==X**N , N>0, N even, N in yl
 		zl?0 -> [SZ,Zero,Nonz],
 			SZ: (zh?0 -> [Fail,SZl,SZl]),
 				SZl: zl<- 0, goto Zero,

@@ -42,11 +42,14 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	
 **Related Research**
 1..
+	- [Logical Arithmetic], J.G. Cleary, Future Computing Systems, Vol 2,  No 2, 1987.
+	 
 	- [Solving linear, min and max constraint systems using CLP based on relational interval arithmetic], Pierre Girodias, Eduard Cerny, William J. Older, Theoretical Computer Science, Vol. 173, Iss. 1, February 1997
 	
 	- [CLP(F) and Constrained ODEs], Timothy J Hickey, Brandeis University, Proceedings of the Workshop on Constraint Languages and their use in Problem Modelling, 1994
 ---
 &
+	[Logical Arithmetic] <- link https://prism.ucalgary.ca/bitstream/handle/1880/45818/1986-235-9.pdf
 	[Inside BNR Prolog] <- link docs/Inside_BNRP/WendezVousWithWAMA.html
 	[Constraint Arithmetic on Real Intervals] <- link docs/ConstraintAritmetic.pdf 
 	[Extending Prolog with Constraint Arithmetic on Real Intervals] <- link docs/ExtendingProlog.pdf
