@@ -63,8 +63,8 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	[Constraint Logic Programming on Boolean, Integer and Real Intervals] <- link docs/CLPonBNR.pdf
 	[Programming in CLP(BNR)] <- link docs/ProgrammingInCLP.pdf
 	[Computing Time Intervals Logically] <- link docs/ComputingTime.pdf
-	[Programming in Logic] <- link docs/PIC-Prolog.pdf
-	[Costas Arrays] <- link docs/CostasArrays.pdf
+	[Programming in Logic] <- link docs/PIC-Prolog.PDF
+	[Costas Arrays] <- link docs/Costas-Arrays.PDF
 	[An Incremental Garbage Collector for WAM-Based Prolog] <- link docs/IncrementalGC/IncrementalGC.html
 	[A WAM Compiler for BNR Prolog] <- link docs/WAMcompiler/WAMcompiler.html
 	[Operator Precedence Grammars] <- link docs/OpPrecedenceGrammars/OpPrecedenceGrammars.html

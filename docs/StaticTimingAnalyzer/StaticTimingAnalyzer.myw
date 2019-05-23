@@ -317,7 +317,7 @@ The primitive for a D flip-flop is:
 				Setup_window:real(O,Setup),
 				Neg_hold is -1 * Hold,
 				Hold_window:real(Neg_hold,O),
-				Hazard window == Clk_P + Setup_window + Hold_window,
+				Hazard_window == Clk_P + Setup_window + Hold_window,
 				%	Timing Verification
 				verify(D, Hazard_window).
 ~~~
