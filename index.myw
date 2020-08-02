@@ -32,7 +32,11 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	
 	- [Computing Time Intervals Logically], André Vellino & William J. Older, presented at Society for Exact Philosophy meeting in 1993
 	
+	- [Getting to the real problem: experience with BNR Prolog in OR], W.J. Older, G.M. Swinkels & M.H. van Emden, Third International Conference on the Paractical Applications of Prolog, April,1995
+	
 	- [Design and Implementation of a Static Timing Analyzer using CLP(BNR)], Tammer Kamel, CRL Internal, 1993
+	
+	- [Application of Relational Interval Arithmetic to Ordinary Differential Equations], William J. Older, 1994
 	
 **Other Applications**
 1..
@@ -63,6 +67,7 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	[Constraint Logic Programming on Boolean, Integer and Real Intervals] <- link docs/CLPonBNR.pdf
 	[Programming in CLP(BNR)] <- link docs/ProgrammingInCLP.pdf
 	[Computing Time Intervals Logically] <- link docs/ComputingTime.pdf
+	[Getting to the real problem: experience with BNR Prolog in OR] <- link http://webhome.cs.uvic.ca/~vanemden/Publications/PAP95.pdf
 	[Programming in Logic] <- link docs/PIC-Prolog.PDF
 	[Costas Arrays] <- link docs/Costas-Arrays.PDF
 	[An Incremental Garbage Collector for WAM-Based Prolog] <- link docs/IncrementalGC/IncrementalGC.html
@@ -77,3 +82,4 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	[Interval Arithmetic: from Principles to Implementation] <- link http://fab.cba.mit.edu/classes/S62.12/docs/Hickey_interval.pdf
 	[Efficient Implementation of Interval Arithmetic Narrowing Using IEEE Arithmetic] <- link http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.44.6767
 	[Metalevel Interval Arithmetic and Verifiable Constraint Solving] <- link https://scholar.lib.vt.edu/ejournals/JFLP/jflp-mirror/articles/2001/S01-02/JFLP-A01-07.pdf
+	[Application of Relational Interval Arithmetic to Ordinary Differential Equations] <- link docs/ODEsOlder.pdf
