@@ -32,10 +32,12 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	
 	- [Computing Time Intervals Logically], André Vellino & William J. Older, presented at Society for Exact Philosophy meeting in 1993
 	
-	- [Design and Implementation of a Static Timing Analyzer using CLP(BNR)], Tammer Kamel, CRL Internal, 1993
-	
 	- [Getting to the Real Problem: Experience with BNR Prolog in OR], W. J. Older, G.M. Swinkels, and M. H. van Emden, 3rd Int. Conf. on the Practical Application of Prolog (PAP'95)
 	
+	- [Design and Implementation of a Static Timing Analyzer using CLP(BNR)], Tammer Kamel, CRL Internal, 1993
+	
+	- [Application of Relational Interval Arithmetic to Ordinary Differential Equations], William J. Older, 1994
+
 	- [A register allocation problem solved by constraint logic programming and interval arithmetic], I. E. Bennour and E. M. Aboulhamid, Université de Montréal
 	
 	- [Tool for Task Allocation and Scheduling in Hard Real-Time Systems], Xiyue Zhang, Master's Thesis, Carleton University, 1998
