@@ -317,7 +317,7 @@ The primitive for a D flip-flop is:
 				Setup_window:real(O,Setup),
 				Neg_hold is -1 * Hold,
 				Hold_window:real(Neg_hold,O),
-				Hazard window == Clk_P + Setup_window + Hold_window,
+				Hazard_window == Clk_P + Setup_window + Hold_window,
 				%	Timing Verification
 				verify(D, Hazard_window).
 ~~~
@@ -543,7 +543,7 @@ J. H. M. Lee and M. H. Van Emden, Adapting CLP(R) to Floating Point Arithmetic, 
 
 R.E. Moore, Interval Analysis, Prentice Hall, 1966.
 
-W. Older and A. Vellino, Extending Pro log with Constraint Arithmetic on Real Intervals, in Proceedings of the Canadian Conference of Electrical and Computer Engineering, 1990.
+W. Older and A. Vellino, Extending Prolog with Constraint Arithmetic on Real Intervals, in Proceedings of the Canadian Conference of Electrical and Computer Engineering, 1990.
 
 W. Older and A. Vellino, Constraint Arithmetic on Real Intervals, to appear in Constraint Logic Programming: Selected Research, MIT Press, 1993.
 
