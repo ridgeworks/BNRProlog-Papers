@@ -34,6 +34,12 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	
 	- [Design and Implementation of a Static Timing Analyzer using CLP(BNR)], Tammer Kamel, CRL Internal, 1993
 	
+	- [Getting to the Real Problem: Experience with BNR Prolog in OR], W. J. Older, G.M. Swinkels, and M. H. van Emden, 3rd Int. Conf. on the Practical Application of Prolog (PAP'95)
+	
+	- [A register allocation problem solved by constraint logic programming and interval arithmetic], I. E. Bennour and E. M. Aboulhamid, Université de Montréal
+	
+	- [Tool for Task Allocation and Scheduling in Hard Real-Time Systems], Xiyue Zhang, Master's Thesis, Carleton University, 1998
+	
 **Other Applications**
 1..
 	- [Programming in Logic], André Vellino,  CRL Internal, 1990
@@ -43,10 +49,16 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 **Related Research**
 1..
 	- [Logical Arithmetic], J.G. Cleary, Future Computing Systems, Vol 2,  No 2, 1987.
+	
+	- [Efficient Implementation of Interval Arithmetic Narrowing Using IEEE Arithmetic], Timothy Hickey & Qun Ju, Brandeis University, 1997
+	
+	- [Interval Arithmetic: from Principles to Implementation], Tim Hickey & Maarten H. van Emden, Journal of the ACM, September, 2001
 	 
 	- [Solving linear, min and max constraint systems using CLP based on relational interval arithmetic], Pierre Girodias, Eduard Cerny, William J. Older, Theoretical Computer Science, Vol. 173, Iss. 1, February 1997
 	
 	- [CLP(F) and Constrained ODEs], Timothy J Hickey, Brandeis University, Proceedings of the Workshop on Constraint Languages and their use in Problem Modelling, 1994
+	
+	- [Metalevel Interval Arithmetic and Verifiable Constraint Solving], Tim Hickey, Brandeis University, September, 2001
 ---
 &
 	[Logical Arithmetic] <- link https://prism.ucalgary.ca/bitstream/handle/1880/45818/1986-235-9.pdf
@@ -68,3 +80,9 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	[Solving linear, min and max constraint systems using CLP based on relational interval arithmetic] <- 
 		link https://www.sciencedirect.com/science/article/pii/S0304397596001983?via=ihub
 	[CLP(F) and Constrained ODEs] <- link https://www.researchgate.net/profile/Tim_Hickey/publication/2505442_CLPF_and_Constrained_ODEs/links/54b7bc530cf2e68eb2804650/CLPF-and-Constrained-ODEs.pdf
+	[Interval Arithmetic: from Principles to Implementation] <- link http://fab.cba.mit.edu/classes/S62.12/docs/Hickey_interval.pdf
+	[Efficient Implementation of Interval Arithmetic Narrowing Using IEEE Arithmetic] <- link http://citeseerx.ist.psu.edu/viewdoc/summary?doi=10.1.1.44.6767
+	[Metalevel Interval Arithmetic and Verifiable Constraint Solving] <- link https://scholar.lib.vt.edu/ejournals/JFLP/jflp-mirror/articles/2001/S01-02/JFLP-A01-07.pdf
+	[Getting to the Real Problem: Experience with BNR Prolog in OR] <- link http://webhome.cs.uvic.ca/~vanemden/Publications/PAP95.pdf
+	[A register allocation problem solved by constraint logic programming and interval arithmetic] <- link http://www.iro.umontreal.ca/~aboulham/pdfs_sources/IBfifoPortland.pdf
+	[Tool for Task Allocation and Scheduling in Hard Real-Time Systems] <- link https://central.bac-lac.gc.ca/.item?id=MQ32435&op=pdf&app=Library&oclc_number=46573612
