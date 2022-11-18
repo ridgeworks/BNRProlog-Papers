@@ -88,3 +88,4 @@ BNR Prolog was a research project of the Computing Research Lab of Bell Northern
 	[Getting to the Real Problem: Experience with BNR Prolog in OR] <- link http://webhome.cs.uvic.ca/~vanemden/Publications/PAP95.pdf
 	[A register allocation problem solved by constraint logic programming and interval arithmetic] <- link http://www.iro.umontreal.ca/~aboulham/pdfs_sources/IBfifoPortland.pdf
 	[Tool for Task Allocation and Scheduling in Hard Real-Time Systems] <- link https://central.bac-lac.gc.ca/.item?id=MQ32435&op=pdf&app=Library&oclc_number=46573612
+	[Application of Relational Interval Arithmetic to Ordinary Differential Equations] <- link docs/ODEsOlder.pdf
